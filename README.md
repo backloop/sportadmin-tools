@@ -3,11 +3,11 @@ Scrape website using Selenium+Python to easily traverse login/password page and 
 
 ## Setup
 ### Use pipenv to create a sandbox environment 
-pipenv install
+    pipenv install
 
 ### Run commands inside pipenv
-pipenv run python3 sportadmin_scraper.py loginmail password
-pipenv run python3 sportadmin_analyzer.py
+    pipenv run python3 sportadmin_scraper.py loginmail password
+    pipenv run python3 sportadmin_analyzer.py
 
 ## Tools
 ### sportadmin_scaper.py
