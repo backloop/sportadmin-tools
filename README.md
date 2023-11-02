@@ -1,5 +1,5 @@
 # sportadmin-tools
-Scrape website using Selenium+Python to easily travese login/password page and iframes.
+Scrape website using Selenium+Python to easily traverse login/password page and iframes.
 
 ## Setup
 ### Use pipenv to create a sandbox environment 
