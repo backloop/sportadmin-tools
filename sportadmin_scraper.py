@@ -26,6 +26,9 @@ class ReportState(IntEnum):
 
 class SportadminGamesScraper:
 
+    def pretty_print(self, element):
+        print(element.get_attribute('outerHTML'))
+
     def collect(self, email, password):
         self.driver = webdriver.Chrome()
 
