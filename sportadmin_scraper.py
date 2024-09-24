@@ -49,9 +49,12 @@ class SportadminGamesScraper:
         #
         # SELECT PROFILE: NIKE-LEDARE
         #
-        #self.driver.find_element(By.CSS_SELECTOR, ".userprofile:nth-child(2) .title").click()
-        # auto-select the first element
-        self.driver.find_element(By.CLASS_NAME, "userprofile").click()
+        # sometimes this page is not loaded, so check that first.
+        if self.driver.current_url == "https://identity.sportadmin.se/profile/user/gateway":
+            #self.driver.find_element(By.CSS_SELECTOR, ".userprofile:nth-child(2) .title").click()
+
+            # auto-select the first element
+            userprofile = self.driver.find_element(By.CLASS_NAME, "userprofile").click()
 
         #
         # GO TO "KALLELSER"/ACTIVITIES PAGE WHEN THE DEFAULT PAGE HAS LOADED
