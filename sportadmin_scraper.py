@@ -122,6 +122,11 @@ class SportadminGamesScraper:
                 # keep the selected activity in view
                 self.driver.execute_script("arguments[0].scrollIntoView();", activity)
 
+                # check if we can skip this activity
+                activity_type = activity.find_element(By.XPATH, "../../td[3]")
+                if activity_type.text in ("Träning",):
+                    continue
+
                 # click on "Visa" button for the activity
                 activity.click()
 
