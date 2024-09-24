@@ -70,7 +70,7 @@ class SportadminGamesScraper:
         self.driver.switch_to.frame(2)
         self.driver.switch_to.frame(0)
 
-        # unselect "show only future marches"
+        # unselect "show only future matches"
         self.driver.find_element(By.NAME, "visaKommande").click()
 
         # container for collected data
@@ -91,7 +91,8 @@ class SportadminGamesScraper:
 
             loop += 1
             # offset the parsing on different pages
-            # mostly for debugging, but could alos be used to limit parsing
+            # mostly for debugging, but could also be used to limit parsing
+            # list contains offset/page
             start = (28, 0)
 
             #for idx in range(start[loop], cnt):
@@ -109,7 +110,7 @@ class SportadminGamesScraper:
                 # keep the selected activity in view
                 self.driver.execute_script("arguments[0].scrollIntoView();", activity)
 
-                # click on "Visa" button
+                # click on "Visa" button for the activity
                 activity.click()
 
                 #
@@ -179,7 +180,7 @@ class SportadminGamesScraper:
                     tab = self.driver.find_element(By.XPATH, "//li[contains(@onclick,'kallelseFlikar=%s')]" % tab_name)
                     tab.click()
 
-                    # playes and trainers are separated by a thin line, find that line and
+                    # players and trainers are separated by a thin line, find that line and
                     # select all players before the line
                     # i.e. find all "odd" and "even" rows that preceed the row with td of height=2,
                     players = self.driver.find_elements(By.XPATH, "//tr[td[@height=2]]/preceding-sibling::tr[@class='odd' or @class='even']")
@@ -242,7 +243,7 @@ class SportadminGamesScraper:
                 # as we navigated through the 4 tabs above.
                 self.driver.find_element(By.XPATH, "//input[@type='button'][@value='Tillbaka']").click()
 
-                # no need to select the correct iframe when pressing the "Tillbaka" button
+                # now need to select the correct iframe when pressing the "Tillbaka" button
                 #self.driver.switch_to.frame(2)
                 #self.driver.switch_to.frame(0)
 
