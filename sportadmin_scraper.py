@@ -37,13 +37,13 @@ class SportadminGamesScraper:
         #
         self.driver.get("https://identity.sportadmin.se/identity/account/login")
         self.driver.set_window_size(1850, 1053)
-        self.driver.find_element(By.ID, "loginemail").send_keys(email)
-        self.driver.find_element(By.ID, "loginpass").send_keys(password)
 
         #
         # GO TO PROFILE PAGE
         #
         #self.driver.find_element(By.CSS_SELECTOR, ".btn").click()
+        self.driver.find_element(By.ID, "loginemail").send_keys(email)
+        self.driver.find_element(By.ID, "loginpass").send_keys(password)
         self.driver.find_element(By.XPATH, "//form/button[@type='submit']").click()
 
         #
