@@ -3,12 +3,14 @@
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
 from enum import IntEnum, auto
 import csv
 import sys
+import traceback
 
 #
 # 1. docs @ https://selenium-python.readthedocs.io
@@ -63,10 +65,14 @@ class SportadminGamesScraper:
         # to load due to some "verifierar behörighet" and other
         # activities that are performed. typically this takes
         # less than 20 seconds
-        element = WebDriverWait(self.driver, 30).until(
-            EC.presence_of_element_located((By.LINK_TEXT, "Kallelser"))
-        )
-        element.click()
+        try:
+            element = WebDriverWait(self.driver, 30).until(
+                EC.presence_of_element_located((By.LINK_TEXT, "Kallelser"))
+            )
+            element.click()
+        except TimeoutException:
+            traceback.print_exc()
+            exit(1)
 
         #
         # ON ACTIVITIES LIST PAGE
