@@ -102,13 +102,18 @@ class SportadminGamesScraper:
             print("activities: ", cnt)
 
             loop += 1
-            # offset the parsing on different pages
-            # mostly for debugging, but could also be used to limit parsing
-            # list contains offset/page
-            start = (28, 0)
 
-            #for idx in range(start[loop], cnt):
-            for idx in range(cnt):
+            # default range
+            activity_range = range(cnt)
+
+            # debugging range
+            # offset the parsing on different pages, mostly for debugging,
+            # but could also be used to limit parsing
+            # list contains offsets/page
+            #start = (99, 20)
+            #activity_range = range(start[loop], cnt)
+
+            for idx in activity_range:
                 #
                 # ON ACTIVITIES LIST PAGE
                 #
