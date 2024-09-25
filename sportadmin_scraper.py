@@ -183,6 +183,9 @@ class SportadminGamesScraper:
                     self.driver.switch_to.frame(0)
                     continue
 
+                #
+                # NOTE: Not we only have matches that are part of a series
+                #
                 print("%s, %s, %s, %s, " % (activity_type, activity_pk, date, series), end="")
 
                 # return SINGLE ACTIVITY PAGE
@@ -273,8 +276,12 @@ class SportadminGamesScraper:
                 elements = self.driver.find_elements(By.XPATH, "//input[@type='button'][@id='butt'][contains(@onclick,'%s')]/../preceding-sibling::td[@align='center']" % activity_pk)
                 if all( not e.text for e in elements) and all( s == 0 for s in summary):
                     # activity list item shows no players,
-                    # so no players were called and none have answered a call
+                    # also no players were called and none have answered a call
                     # consider this a "match struken"
+                    pass
+                elif all( not e.text for e in elements):
+                    # activity list item shows no players
+                    # this could a future match that has no players assigned
                     pass
                 else:
                     if ((summary[0] != int(elements[0].text.split('/')[0])) or
