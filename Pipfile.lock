@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "ff5ae97454c785a06d16bba26ef4015f6b0367095a616f23e994870bcac92de2"
+            "sha256": "d4d52d3dfa15cf7c34f3056e763e10d9b95ddc61e2346f76644465faf1de9375"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -104,7 +104,7 @@
                 "sha256:fac6e277a41163d27dfab5f4ec1f7a83fac94e170665a4a50191b545721c6521",
                 "sha256:fcd8f556cdc8cfe35e70efb92463082b7f43dd7e547eb071ffc36abc0ca4699b"
             ],
-            "markers": "python_version >= '3.12'",
+            "index": "pypi",
             "version": "==2.1.1"
         },
         "outcome": {
@@ -161,7 +161,6 @@
                 "sha256:fffb8ae78d8af97f849404f21411c95062db1496aeb3e56f146f0355c9989319"
             ],
             "index": "pypi",
-            "markers": "python_version >= '3.9'",
             "version": "==2.2.3"
         },
         "pysocks": {
@@ -193,7 +192,6 @@
                 "sha256:95d08d3b82fb353f3c474895154516604c7f0e6a9a565ae6498ef36c9bac6921"
             ],
             "index": "pypi",
-            "markers": "python_version >= '3.8'",
             "version": "==4.25.0"
         },
         "selenium-chromedriver": {
