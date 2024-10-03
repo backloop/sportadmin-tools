@@ -7,6 +7,9 @@ import sys
 import datetime
 import re
 import pandas as pd
+import io
+import textwrap
+import html
 
 class ReportState(IntEnum):
     PRE_REPORT_AVAILABLE = 1
@@ -17,6 +20,32 @@ class ReportState(IntEnum):
     CALLED_NO_ANSWER = 6
 
 class SportadminGamesAnalyzer:
+
+
+    def pretty_print(self, df, description, filename):
+        output = io.StringIO()
+        print(df, file=output)
+        max_width = max(len(line) for line in output.getvalue().splitlines())
+
+        print("")
+        print("="*max_width)
+        print(description)
+        print("")
+        print(output.getvalue())
+        print("="*max_width)
+
+        escaped_output = html.escape(output.getvalue())
+
+        # Step 4: Wrap the output in a <pre> tag to preserve formatting
+        html_output = f"<html><body><pre>{escaped_output}</pre></body></html>"
+
+        # Step 5: Write the HTML content to a file
+        with open(filename, "w") as file:
+            file.write(html_output)
+
+        print("HTML file created successfully.")
+        output.close()
+
 
     def analyze(self):
 
@@ -105,7 +134,7 @@ class SportadminGamesAnalyzer:
         # and instead keep the MultiIndex format which enables automatic pretty printing
         # in groups by "player name"
         filtered_df = grouped_df[grouped_df['count'] > 1]
-        print(filtered_df)
+        #print(filtered_df)
 
         # flatten to a regular DataFrame
         filtered_df = filtered_df.reset_index()
@@ -116,9 +145,15 @@ class SportadminGamesAnalyzer:
             series_names=('series_names', lambda x: ' : '.join(x))
             ).reset_index()
         sorted_df = multiples_df.sort_values(by='count', ascending=False)
-        print(sorted_df)
 
-
+        # .dedent() removes initial indentation (to enable proper indentation in code)
+        # .strip() removed initial newline introduced by the string formatting in the code
+        self.pretty_print(sorted_df, textwrap.dedent("""
+                        Lista veckor som spelare dubblerat i P2014 och i
+                        vilka serier de dubblerat vid varje tillfälle.
+                        (matcher med P2012 är alltså exkluderade)
+                        """).strip(),
+                        "multiples.html")
 
     def distribution(self, df):
         # Group by "series" and "player name", then count the occurrences
@@ -157,7 +192,14 @@ class SportadminGamesAnalyzer:
         # Apply the ASCII bar transformation only to the "series" columns
         for column in series_columns:
             column_df[column] = column_df[column].apply(lambda x: ascii_bar(x))
-        print(column_df)
+
+        # .dedent() removes initial indentation (to enable proper indentation in code)
+        # .strip() removed initial newline introduced by the string formatting in the code
+        self.pretty_print(column_df, textwrap.dedent("""
+                        Fördelning av spelade P2014 matcher per serie.
+                        Varje streck är en match.
+                        """).strip(),
+                        "distribution.html")
 
 
 if __name__ == "__main__":
