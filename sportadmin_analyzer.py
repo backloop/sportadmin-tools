@@ -22,19 +22,38 @@ class ReportState(IntEnum):
 class SportadminGamesAnalyzer:
 
 
-    def pretty_print(self, df, description, filename):
-        output = io.StringIO()
-        print(df, file=output)
-        max_width = max(len(line) for line in output.getvalue().splitlines())
+    def pretty_print(self, df, show_index, description, filename):
 
-        print("")
-        print("="*max_width)
-        print(description)
-        print("")
-        print(output.getvalue())
-        print("="*max_width)
+        with io.StringIO() as df_io:
+            # !show_index - Print the DataFrame without the row index
+            print(df.to_string(index=show_index), file=df_io)
+            df_string = df_io.getvalue()
+            max_width = max(len(line) for line in df_string.splitlines())
 
-        escaped_output = html.escape(output.getvalue())
+        # dedent and then remove any leading newlines
+        dedented = textwrap.dedent(description).strip()
+        formatted= textwrap.fill(dedented, width=max_width)
+
+        with io.StringIO() as buffer:
+            # Redirect stdout to the buffer
+            original_stdout = sys.stdout
+            sys.stdout = buffer
+
+            print("")
+            print("="*max_width)
+            print(formatted)
+            print("")
+            print(df_string)
+            print("="*max_width)
+
+            # Reset stdout to its original value
+            sys.stdout = original_stdout
+
+            # Get the value from the buffer
+            captured_output = buffer.getvalue()
+
+            print(captured_output)
+            escaped_output = html.escape(captured_output)
 
         # Step 4: Wrap the output in a <pre> tag to preserve formatting
         html_output = f"<html><body><pre>{escaped_output}</pre></body></html>"
@@ -42,9 +61,6 @@ class SportadminGamesAnalyzer:
         # Step 5: Write the HTML content to a file
         with open(filename, "w") as file:
             file.write(html_output)
-
-        print("HTML file created successfully.")
-        output.close()
 
 
     def analyze(self):
@@ -63,9 +79,9 @@ class SportadminGamesAnalyzer:
 
             for row in reader:
                 # separate ReportState into separate columns
-                cols = [0] * 6
-                cols[int(row[-1])-1] = 1
-                row.extend(cols)
+                #cols = [0] * 6
+                #cols[int(row[-1])-1] = 1
+                #row.extend(cols)
 
                 # create week number
                 week_num = datetime.date.fromisoformat(row[0]).isocalendar()[1]
@@ -75,6 +91,9 @@ class SportadminGamesAnalyzer:
 
                 # extrax the series differentiator
                 series = re.sub(r"P10 Sydvästra ([ABCD])[123], höst", r"\g<1>", row[2])
+
+                # remove trailing comment with syntax "<first name> [middle name] <last name> - <comment>"
+                row[3] = re.sub(r"(.*) - .*", r"\g<1>", row[3])
 
                 # create verbose report state
                 report_state = ReportState(int(row[4]))
@@ -87,19 +106,17 @@ class SportadminGamesAnalyzer:
                 row.insert(3, series)
                 data.append(row)
 
-            header = ["date", "match number", "series name", "player name", "ReportState", "available", "not available", "not reported", "coming", "not coming", "not answered"]
+            #header = ["date", "match number", "series name", "player name", "ReportState", "available", "not available", "not reported", "coming", "not coming", "not answered"]
+            header = ["date", "match number", "series name", "player name", "report state"]
             header.insert(0, "date")
             header.insert(1, "week")
-            header.insert(2, "report state")
+            header.insert(2, "ReportState")
             header.insert(3, "series")
 
-        # filter on date range
+        # filter on season
         data = filter(lambda row: "höst" in row[6], data[1:])
 
-        # filter on actually played the game
-        data = filter(lambda row: row[2] == ReportState.CALLED_COMING, data)
-
-        # filter out P2015
+        # filter out external players, where player names start with "- <first name> <last name>"
         data = filter(lambda row: row[7][:2] != "- ", data)
 
         # exapand the filter, othewise after a single walkthrough the iterator will need to be reset
@@ -114,19 +131,51 @@ class SportadminGamesAnalyzer:
         df = pd.DataFrame(data, columns = header)
         #print(df.describe())
 
-        self.distribution(df)
-        self.multiples(df)
+        self.available_distribution(df)
+        self.played_distribution(df)
+        self.played_multiples(df)
 
 
-    def multiples(self, df):
-        # group and count "matches/week"
-        #grouped_df = df.groupby(["player name", "week"]).size()
-        #filtered_df= grouped_df[grouped_df > 1]
-        #print(filtered_df)
+    def played_multiples(self, df):
+        self.multiples(df,
+                       (ReportState.CALLED_COMING,),
+                        """
+                        Lista veckor som spelare dubblerat matcher och i
+                        vilka serier de dubblerat vid varje tillfälle.
+                        (matcher i andra åldersgrupper ej inräknade))
+                        """,
+                       "played_multiples.html")
+
+
+    def played_distribution(self, df):
+        self.distribution(df,
+                          (ReportState.CALLED_COMING,),
+                          """
+                          Fördelning av spelade matcher per serie.
+                          Varje streck är en match.
+                          """,
+                          "played_distribution.html")
+
+
+    def available_distribution(self, df):
+        self.distribution(df,
+                          (ReportState.PRE_REPORT_AVAILABLE,
+                           ReportState.CALLED_COMING,
+                           ReportState.CALLED_NOT_COMING),
+                           """
+                           Fördelning av anmäld tillgänglighet
+                           (förhandsrapporterad som "tillgänglig", eller faktiskt spelat).
+                           Varje streck är en match.
+                           """,
+                          "available_distribution.html")
+
+    def multiples(self, df, states, description, html_filename):
+
+        filtered_df = df[df['ReportState'].isin(states)]
 
         # group and count "matches/week, but include which series were played"
         # use counting operator 'size' on the 'week' column to count the number of items in each group
-        grouped_df = df.groupby(["player name", "week"]).agg(
+        grouped_df = filtered_df.groupby(["player name", "week"]).agg(
             count=('week', 'size'),
             series_names=('series', lambda x: ','.join(sorted(x)))
             )
@@ -148,16 +197,15 @@ class SportadminGamesAnalyzer:
 
         # .dedent() removes initial indentation (to enable proper indentation in code)
         # .strip() removed initial newline introduced by the string formatting in the code
-        self.pretty_print(sorted_df, textwrap.dedent("""
-                        Lista veckor som spelare dubblerat i P2014 och i
-                        vilka serier de dubblerat vid varje tillfälle.
-                        (matcher med P2012 är alltså exkluderade)
-                        """).strip(),
-                        "multiples.html")
+        self.pretty_print(sorted_df, False, description, html_filename)
 
-    def distribution(self, df):
+
+    def distribution(self, df, states, description, html_filename):
+
+        filtered_df = df[df['ReportState'].isin(states)]
+
         # Group by "series" and "player name", then count the occurrences
-        grouped_df = df.groupby(["series", "player name"]).size().reset_index(name='count')
+        grouped_df = filtered_df.groupby(["series", "player name"]).size().reset_index(name='count')
 
         # Sort by "series" first and then by "count" within each "series" in descending order
         sorted_df = grouped_df.sort_values(by=["series", "count", "player name"], ascending=[True, False, True])
@@ -195,11 +243,7 @@ class SportadminGamesAnalyzer:
 
         # .dedent() removes initial indentation (to enable proper indentation in code)
         # .strip() removed initial newline introduced by the string formatting in the code
-        self.pretty_print(column_df, textwrap.dedent("""
-                        Fördelning av spelade P2014 matcher per serie.
-                        Varje streck är en match.
-                        """).strip(),
-                        "distribution.html")
+        self.pretty_print(column_df, True, description, html_filename)
 
 
 if __name__ == "__main__":
