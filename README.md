@@ -2,7 +2,7 @@
 Scrape website using Selenium+Python to easily traverse login/password page and iframes.
 
 ## Setup
-### Use pipenv to create a sandbox environment 
+### Use pipenv to create a sandbox environment
     pipenv install
 
 ### Run commands inside pipenv
@@ -11,11 +11,14 @@ Scrape website using Selenium+Python to easily traverse login/password page and 
 
 ## Tools
 ### sportadmin_scaper.py
-Scrapes all "match" entries and collects all available players data. Currently only supports "current year". 
-Stores the result in sportadmin.csv 
+Scrapes all "match" entries and collects all available players' data. Currently only supports "current year", other filters are also hardcoded
+Stores the result in sportadmin.csv
 
 ### sportadmin_analyzer.py
-Reads sportadmin.csv and presents player statistics
-* Who's your teammate? (matrix showing how often each pplayer played together)
-* How many matches did you have to pass (not being called that weekend despite being available)
+Reads sportadmin.csv and presents player statistics:
+* Total reported availablility
 * How many times did you play in each team?
+
+future?
+* Who's your teammate? (matrix showing how often each player played together)
+* How many weekends did you have to pass (not being called that weekend despite being available)
