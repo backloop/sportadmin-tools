@@ -117,7 +117,7 @@ class SportadminGamesAnalyzer:
         data = filter(lambda row: "höst" in row[6], data[1:])
 
         # filter out external players, where player names start with "- <first name> <last name>"
-        data = filter(lambda row: row[7][:2] != "- ", data)
+        #data = filter(lambda row: row[7][:2] != "- ", data)
 
         # exapand the filter, othewise after a single walkthrough the iterator will need to be reset
         data = list(data)
