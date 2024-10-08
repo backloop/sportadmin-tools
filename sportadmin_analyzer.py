@@ -246,6 +246,32 @@ class SportadminGamesAnalyzer:
         self.pretty_print(column_df, True, description, html_filename)
 
 
+    def distribution_per_week(self, df, states, description, html_filename):
+
+        # .copy() the filtered DataFrame to avoid
+        # SettingWithCopyWarning: A value is trying to be set on a copy of a slice from a DataFrame.
+        filtered_df = df[df['ReportState'].isin(states)].copy()
+
+        # Merge "week number" and "series name" into a unique identifier
+        filtered_df['week_series'] = filtered_df['week'].astype(str) + '_' + filtered_df['series']
+
+        # Check for duplicates
+        duplicates = filtered_df.duplicated(subset=['player name', 'week_series'])
+        print("Duplicates found:", duplicates.any())
+
+        # Define a function to set the 'entry' value based on 'series'
+        # Apply the function to create the 'entry' column
+        filtered_df['entry'] = filtered_df['series'].apply(lambda x: x)
+
+        # Pivot the DataFrame with "player name" as rows, "week_series" as columns, and 1 for entries
+        pivot_df = filtered_df.pivot(index='player name', columns='week_series', values='entry')
+
+        # Fill missing values (indicating no entry) with 0
+        pivot_df = pivot_df.fillna('')
+
+        self.pretty_print(pivot_df, True, description, html_filename)
+
+
 if __name__ == "__main__":
     print("Hello World!")
 
