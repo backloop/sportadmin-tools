@@ -31,8 +31,8 @@ class SportadminGamesAnalyzer:
             max_width = max(len(line) for line in df_string.splitlines())
 
         # dedent and then remove any leading newlines
-        dedented = textwrap.dedent(description).strip()
-        formatted= textwrap.fill(dedented, width=max_width)
+        dedented_description = textwrap.dedent(description).strip()
+        formatted_description= textwrap.fill(dedented_description, width=max_width)
 
         with io.StringIO() as buffer:
             # Redirect stdout to the buffer
@@ -41,7 +41,9 @@ class SportadminGamesAnalyzer:
 
             print("")
             print("="*max_width)
-            print(formatted)
+            print(f"{self.season.upper()} {self.year}")
+            print("")
+            print(formatted_description)
             print("")
             print(df_string)
             print("="*max_width)
@@ -63,13 +65,13 @@ class SportadminGamesAnalyzer:
             file.write(html_output)
 
 
-    def analyze(self):
+    def load(self, filename):
 
         #
         # Read all data and add some calculated columns
         #
 
-        with open('sportadmin.csv', newline='') as csvfile:
+        with open(filename, newline='') as csvfile:
 
             data = []
 
@@ -89,8 +91,8 @@ class SportadminGamesAnalyzer:
                 # convert to date
                 date = datetime.datetime.strptime(row[0], "%Y-%m-%d")
 
-                # extrax the series differentiator
-                series = re.sub(r"P10 Sydvästra ([ABCD])[123], höst", r"\g<1>", row[2])
+                # extract the series differentiator
+                series = re.sub(r"[PF][0-9]{2} [A-Ö-a-ö]+ ([A-D][1-5]), (vår|höst)", r"\g<1>", row[2])
 
                 # remove trailing comment with syntax "<first name> [middle name] <last name> - <comment>"
                 row[3] = re.sub(r"(.*) - .*", r"\g<1>", row[3])
@@ -114,13 +116,24 @@ class SportadminGamesAnalyzer:
             header.insert(3, "series")
 
         # filter on season
-        data = filter(lambda row: "höst" in row[6], data[1:])
+        self.season = input("Which season [vår, höst]? ")
+        if not self.season in ("vår", "höst"):
+            print("ERROR: Incorrect season")
+            exit(1)
+        data = filter(lambda row: self.season in row[6], data)
 
         # filter out external players, where player names start with "- <first name> <last name>"
         #data = filter(lambda row: row[7][:2] != "- ", data)
 
-        # exapand the filter, othewise after a single walkthrough the iterator will need to be reset
+        # expand the filter, otherwise after a single walkthrough the iterator is exhausted
         data = list(data)
+
+        # all matches must be within the same year (artificial limitation for pretty_print()
+        years = {row[0].year for row in data}
+        if len(years) > 1:
+            print("ERROR: Too many years")
+            exit(1)
+        self.year = years.pop()
 
         for row in data:
             print(row)
@@ -128,46 +141,57 @@ class SportadminGamesAnalyzer:
         print(f"len: {len(data)}")
         print(header)
 
-        df = pd.DataFrame(data, columns = header)
+        self.df = pd.DataFrame(data, columns = header)
         #print(df.describe())
 
-        self.available_distribution(df)
-        self.played_distribution(df)
-        self.played_multiples(df)
+
+    def analyze(self):
+
+        self.available_distribution()
+        self.played_distribution()
+        self.played_multiples()
 
 
-    def played_multiples(self, df):
-        self.multiples(df,
+    def played_multiples(self):
+        self.multiples(self.df,
                        (ReportState.CALLED_COMING,),
-                        """
-                        Lista veckor som spelare dubblerat matcher och i
-                        vilka serier de dubblerat vid varje tillfälle.
-                        (matcher i andra åldersgrupper ej inräknade))
-                        """,
+                       """
+                       Lista veckor som spelare dubblerat matcher och i
+                       vilka serier de dubblerat vid varje tillfälle.
+                       (matcher i andra åldersgrupper ej inräknade))
+                       """,
                        "played_multiples.html")
 
 
-    def played_distribution(self, df):
-        self.distribution(df,
+    def played_distribution(self):
+        self.distribution(self.df,
                           (ReportState.CALLED_COMING,),
                           """
                           Fördelning av spelade matcher per serie.
                           Varje streck är en match.
                           """,
-                          "played_distribution.html")
+                          "played_distribution_total.html")
+
+        self.distribution_per_week(self.df,
+                          (ReportState.CALLED_COMING,),
+                          """
+                          Fördelning av spelade matcher per serie och vecka.
+                          """,
+                          "played_distribution_per_week.html")
 
 
-    def available_distribution(self, df):
-        self.distribution(df,
+    def available_distribution(self):
+        self.distribution(self.df,
                           (ReportState.PRE_REPORT_AVAILABLE,
-                           ReportState.CALLED_COMING,
-                           ReportState.CALLED_NOT_COMING),
-                           """
-                           Fördelning av anmäld tillgänglighet
-                           (förhandsrapporterad som "tillgänglig", eller faktiskt spelat).
-                           Varje streck är en match.
-                           """,
+                          ReportState.CALLED_COMING,
+                          ReportState.CALLED_NOT_COMING),
+                          """
+                          Fördelning av anmäld tillgänglighet
+                          (förhandsrapporterad som "tillgänglig", eller faktiskt spelat).
+                          Varje streck är en match.
+                          """,
                           "available_distribution.html")
+
 
     def multiples(self, df, states, description, html_filename):
 
@@ -195,8 +219,6 @@ class SportadminGamesAnalyzer:
             ).reset_index()
         sorted_df = multiples_df.sort_values(by='count', ascending=False)
 
-        # .dedent() removes initial indentation (to enable proper indentation in code)
-        # .strip() removed initial newline introduced by the string formatting in the code
         self.pretty_print(sorted_df, False, description, html_filename)
 
 
@@ -241,8 +263,6 @@ class SportadminGamesAnalyzer:
         for column in series_columns:
             column_df[column] = column_df[column].apply(lambda x: ascii_bar(x))
 
-        # .dedent() removes initial indentation (to enable proper indentation in code)
-        # .strip() removed initial newline introduced by the string formatting in the code
         self.pretty_print(column_df, True, description, html_filename)
 
 
@@ -276,4 +296,5 @@ if __name__ == "__main__":
     print("Hello World!")
 
     sp = SportadminGamesAnalyzer()
+    sp.load("sportadmin.csv")
     sp.analyze()
