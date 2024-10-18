@@ -10,6 +10,7 @@ import pandas as pd
 import io
 import textwrap
 import html
+import argparse
 
 class ReportState(IntEnum):
     PRE_REPORT_AVAILABLE = 1
@@ -21,6 +22,8 @@ class ReportState(IntEnum):
 
 class SportadminGamesAnalyzer:
 
+    def __init__(self, args):
+        self.args = args
 
     def pretty_print(self, df, show_index, description, filename):
 
@@ -144,6 +147,15 @@ class SportadminGamesAnalyzer:
         self.df = pd.DataFrame(data, columns = header)
         #print(df.describe())
 
+        if self.args.obfuscate:
+            # Get unique player names
+            unique_players = self.df['player name'].unique()
+
+            # Create a mapping from actual player names to obfuscated names
+            player_mapping = {name: f"Player_{i+1:02d}" for i, name in enumerate(unique_players)}
+
+            # Apply the mapping to the 'player name' column
+            self.df['player name'] = self.df['player name'].map(player_mapping)
 
     def analyze(self):
 
@@ -295,6 +307,14 @@ class SportadminGamesAnalyzer:
 if __name__ == "__main__":
     print("Hello World!")
 
-    sp = SportadminGamesAnalyzer()
+    parser = argparse.ArgumentParser(description="Analyze player data exported from SportAdmin")
+
+    # Add arguments
+    parser.add_argument('-o', '--obfuscate', action="store_true", help="Obsfuscate the player names in the output graphs")
+
+    # Parse the arguments
+    args = parser.parse_args()
+
+    sp = SportadminGamesAnalyzer(args)
     sp.load("sportadmin.csv")
     sp.analyze()
