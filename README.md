@@ -11,14 +11,11 @@ Scrape website using Selenium+Python to easily traverse login/password page and 
 
 ## Tools
 ### sportadmin_scaper.py
-Scrapes all "match" entries and collects all available players' data. Currently only supports "current year", other filters are also hardcoded
-Stores the result in sportadmin.csv
+* Scrapes all "match" entries and collects all available players' data. Currently only supports "current year", other filters may also still be hardcoded.
+* Stores the result in sportadmin.csv
 
 ### sportadmin_analyzer.py
 Reads sportadmin.csv and presents player statistics:
-* Total reported availablility
-* How many times did you play in each team?
-
-future?
-* Who's your teammate? (matrix showing how often each player played together)
-* How many weekends did you have to pass (not being called that weekend despite being available)
+* Total reported availablility?
+* How many times did each player play in each team?
+* Which weekends did players play multiple games?
