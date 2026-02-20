@@ -154,11 +154,12 @@ class SportadminGamesScraper:
         # click on "Matcher" to return to the list of matches.
         self.page.get_by_role("link", name="Matcher").click()
 
+        frame, rows = self.wait_for_matches_iframe_to_complete()
+
         if self.year_label and not self.period_set:
             self.set_period_dropdown(self.year_label)
             self.period_set = True
-
-        frame, rows = self.wait_for_matches_iframe_to_complete()
+            frame, rows = self.wait_for_matches_iframe_to_complete()
 
         # have we parsed all matches in the selected series
         if self.row_idx >= (self.row_count-1):
@@ -190,19 +191,31 @@ class SportadminGamesScraper:
         return rows
 
     def set_period_dropdown(self, year_label: str) -> None:
-        # Period dropdown is available on the "Matcher" page inside the matches iframe
-        frame = self.page.frame_locator("#vpframe_3") \
-                         .frame_locator("iframe[name=\"printa\"]")
+        # Period dropdown is select#group_pk on the "Matcher" page.
         try:
-            selects = frame.locator("select")
-            if selects.count() == 0:
-                print(f"Warning: Period dropdown not found (no <select>; wanted year '{year_label}')")
-                return
+            def _find_group_pk():
+                for f in self.page.frames:
+                    try:
+                        sel = f.locator("select#grupp_pk, select[name='grupp_pk']")
+                        if sel.count() > 0:
+                            return sel
+                    except Exception:
+                        continue
+                return None
 
-            # Heuristic: the first select in this iframe is the Period dropdown
-            period_select = selects.nth(0)
+            period_select = None
+            deadline = time.time() + (DEFAULT_TIMEOUT / 1000)
+            while time.time() < deadline and period_select is None:
+                period_select = _find_group_pk()
+                if period_select is None:
+                    time.sleep(0.2)
+
+            if period_select is None:
+                print(f"Error: Period dropdown select#group_pk not found (wanted year '{year_label}').")
+                sys.exit(2)
+
             options = period_select.locator("option").all_inner_texts()
-            year_pattern = re.compile(rf"\\b{re.escape(year_label)}\\b")
+            year_pattern = re.compile(rf"{re.escape(year_label)}")
             matching = [opt for opt in options if year_pattern.search(opt)]
 
             if len(matching) == 1:
@@ -236,6 +249,22 @@ class SportadminGamesScraper:
         button.click()
         self.wait_for_loading_bar_to_complete()
 
+        # try to wait until the clicked tab becomes active/selected
+        try:
+            expect(button).to_have_attribute("aria-selected", "true", timeout=DEFAULT_TIMEOUT)
+        except Exception:
+            try:
+                expect(button).to_have_class(re.compile(r"\bactive\b"), timeout=DEFAULT_TIMEOUT)
+            except Exception:
+                pass
+
+        # try to wait for a header label that matches the tab (if present)
+        try:
+            header = frame_locator.get_by_role("heading", name=re.compile(r"^(Kommer|Kommer ej|Ej svarat|Ej kallad)$"))
+            header.first.wait_for(state="visible", timeout=2000)
+        except Exception:
+            pass
+
         # wait for iframe to complete loading
         frame = self.page.wait_for_selector("#vpframe_1").content_frame()
         frame.wait_for_load_state("domcontentloaded")
@@ -249,23 +278,37 @@ class SportadminGamesScraper:
         #    #print("no players in this tab")
         #    return frame, None, None
 
-        # check that the current tab has been selected (belongs to class active)
-        frame_locator = self.page.frame_locator("#vpframe_1")
-        button = frame_locator.locator('button.active').filter(has_text=tab_pattern)
-        pretty_print(button)
-        #button.wait_for(state="visible")
-        button.wait_for(state="attached")
-        print("Button ready")
-
-        # wait for table to become visible
+        # wait for table to become visible (retry once if it doesn't show)
         table = frame.locator("table.idealis-table")
-        table.wait_for(state="visible")
+        try:
+            table.wait_for(state="visible")
+        except PlaywrightTimeoutError:
+            # re-click tab and retry
+            button.click()
+            self.wait_for_loading_bar_to_complete()
+            frame = self.page.wait_for_selector("#vpframe_1").content_frame()
+            table = frame.locator("table.idealis-table")
+            table.wait_for(state="visible", timeout=DEFAULT_TIMEOUT * 2)
 
         # wait for last (relevant) row to become visible
         rows = frame.locator("table.idealis-table tbody tr")
         # there might be more rows; e.g. "Ledare", but at least
         # wait for known content (players + "Medlemmar")
         rows.nth(player_count).wait_for(state="visible")
+
+        # small stabilization window to avoid reading before filter applies
+        prev = -1
+        stable = 0
+        for _ in range(10):
+            count = rows.count()
+            if count == prev:
+                stable += 1
+                if stable >= 2:
+                    break
+            else:
+                stable = 0
+                prev = count
+            time.sleep(0.1)
         #rows.nth(player_count).wait_for(state="attached")
 
         #while rows.count() <= player_count:
@@ -278,11 +321,25 @@ class SportadminGamesScraper:
         # a live locator that can change because of DOM updates
 
         # Get a stable snapshot: list[list[str]] of cell texts
-        table_data = rows.evaluate_all(
-            """trs => trs.map(tr =>
-                Array.from(tr.querySelectorAll('td'), td => td.innerText.trim())
-            )"""
-        )
+        # Re-locate rows just before evaluation and retry once if the iframe navigates.
+        table_data = None
+        for attempt in range(2):
+            try:
+                rows = frame.locator("table.idealis-table tbody tr")
+                table_data = rows.evaluate_all(
+                    """trs => trs.map(tr =>
+                        Array.from(tr.querySelectorAll('td'), td => td.innerText.trim())
+                    )"""
+                )
+                break
+            except Exception as e:
+                if "Execution context was destroyed" in str(e) and attempt == 0:
+                    time.sleep(0.2)
+                    continue
+                raise
+
+        if table_data is None:
+            raise RuntimeError("Failed to read table data after retry")
 
         return table_data, player_count
 
