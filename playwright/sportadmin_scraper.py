@@ -85,6 +85,8 @@ class SportadminGamesScraper:
         self.row_idx = 0
 
         self.series_name = ""
+        self.year_label = None
+        self.period_set = False
 
 
     def wait_for_loading_bar_to_complete(self):
@@ -152,6 +154,10 @@ class SportadminGamesScraper:
         # click on "Matcher" to return to the list of matches.
         self.page.get_by_role("link", name="Matcher").click()
 
+        if self.year_label and not self.period_set:
+            self.set_period_dropdown(self.year_label)
+            self.period_set = True
+
         frame, rows = self.wait_for_matches_iframe_to_complete()
 
         # have we parsed all matches in the selected series
@@ -182,6 +188,37 @@ class SportadminGamesScraper:
         self.row_count = rows.count()
         print("matches: ", self.row_count)
         return rows
+
+    def set_period_dropdown(self, year_label: str) -> None:
+        # Period dropdown is available on the "Matcher" page inside the matches iframe
+        frame = self.page.frame_locator("#vpframe_3") \
+                         .frame_locator("iframe[name=\"printa\"]")
+        try:
+            selects = frame.locator("select")
+            if selects.count() == 0:
+                print(f"Warning: Period dropdown not found (no <select>; wanted year '{year_label}')")
+                return
+
+            # Heuristic: the first select in this iframe is the Period dropdown
+            period_select = selects.nth(0)
+            options = period_select.locator("option").all_inner_texts()
+            year_pattern = re.compile(rf"\\b{re.escape(year_label)}\\b")
+            matching = [opt for opt in options if year_pattern.search(opt)]
+
+            if len(matching) == 1:
+                period_select.select_option(label=matching[0])
+                self.wait_for_loading_bar_to_complete()
+                return
+
+            if len(matching) == 0:
+                print(f"Error: No Period option matched year '{year_label}'.")
+            else:
+                print(f"Error: Multiple Period options matched year '{year_label}':")
+                for opt in matching:
+                    print(f"- {opt}")
+            sys.exit(2)
+        except PlaywrightTimeoutError:
+            print(f"Warning: Period dropdown not set (timeout; wanted year '{year_label}')")
 
 
     def click_on_tab_and_read_for_table(self, tab_pattern):
@@ -452,7 +489,8 @@ class SportadminGamesScraper:
         else:
             return (None, "")
 
-    def collect(self,  email, password, start_date, end_date, series_pattern) -> None:
+    def collect(self,  email, password, start_date, end_date, series_pattern, year_label=None) -> None:
+        self.year_label = year_label
 
         #
         # LOAD LOGIN PAGE
@@ -570,6 +608,7 @@ if __name__ == "__main__":
     # Optional arguments
     arg_parser.add_argument("--start-date", help="Earliest allowed date (YYYY-MM-DD)", type=str, default="2001-01-01")
     arg_parser.add_argument("--end-date", help="Latest allowed date (YYYY-MM-DD)", type=str, default=datetime.now().strftime("%Y-%m-%d"))
+    arg_parser.add_argument("--year", help="Year to match in Period dropdown after page load (e.g. 2025)", type=str, default="2025")
     arg_parser.add_argument("--series-pattern", help="Substring to use when matching series names", type=str, default="")
     args = arg_parser.parse_args()
 
@@ -579,9 +618,15 @@ if __name__ == "__main__":
     with sync_playwright() as playwright:
         try:
             sp = SportadminGamesScraper(playwright)
-            sp.collect(args.email, args.password, start_date, end_date, args.series_pattern)
+            sp.collect(
+                args.email,
+                args.password,
+                start_date,
+                end_date,
+                args.series_pattern,
+                args.year,
+            )
         except PlaywrightTimeoutError as e:
             print(e)
             traceback.print_exc()
             input("Press Enter to continue...")
-
