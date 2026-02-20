@@ -8,6 +8,7 @@ selenium = "*"
 selenium-chromedriver = "*"
 pandas = "*"
 numpy = "*"
+playwright = "*"
 
 [dev-packages]
 
