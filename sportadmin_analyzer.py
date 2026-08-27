@@ -12,13 +12,15 @@ import textwrap
 import html
 import argparse
 
-class ReportState(IntEnum):
-    PRE_REPORT_AVAILABLE = 1
-    PRE_REPORT_NOT_AVAILABLE = 2
-    PRE_REPORT_NOT_REPORTED = 3
-    CALLED_COMING = 4
-    CALLED_NOT_COMING = 5
-    CALLED_NO_ANSWER = 6
+
+class ReportState():
+    PRE_REPORT_AVAILABLE = "Tillgänglig"
+    PRE_REPORT_NOT_AVAILABLE = "Ej tillgänglig"
+    PRE_REPORT_NOT_REPORTED = "Ej förhandsrapporterad"
+    CALLED_COMING = "Kommer"
+    CALLED_NOT_COMING = "Kommer ej"
+    CALLED_NO_ANSWER = "Ej svarat"
+
 
 class SportadminGamesAnalyzer:
 
@@ -101,7 +103,8 @@ class SportadminGamesAnalyzer:
                 row[3] = re.sub(r"(.*) - .*", r"\g<1>", row[3])
 
                 # create verbose report state
-                report_state = ReportState(int(row[4]))
+                #report_state = ReportState(int(row[4]))
+                report_state  = row[4]
 
                 header = []
                 # add new columns
@@ -176,24 +179,24 @@ class SportadminGamesAnalyzer:
 
 
     def played_distribution(self):
-        self.distribution(self.df,
+        self.distribution_by_series(self.df,
                           (ReportState.CALLED_COMING,),
                           """
                           Fördelning av spelade matcher per serie.
                           Varje streck är en match.
                           """,
-                          "played_distribution_total.html")
+                          "played_distribution_by_series.html")
 
-        self.distribution_per_week(self.df,
+        self.distribution_by_week(self.df,
                           (ReportState.CALLED_COMING,),
                           """
                           Fördelning av spelade matcher per serie och vecka.
                           """,
-                          "played_distribution_per_week.html")
+                          "played_distribution_by_week.html")
 
 
     def available_distribution(self):
-        self.distribution(self.df,
+        self.distribution_by_series(self.df,
                           (ReportState.PRE_REPORT_AVAILABLE,
                           ReportState.CALLED_COMING,
                           ReportState.CALLED_NOT_COMING),
@@ -234,7 +237,7 @@ class SportadminGamesAnalyzer:
         self.pretty_print(sorted_df, False, description, html_filename)
 
 
-    def distribution(self, df, states, description, html_filename):
+    def distribution_by_series(self, df, states, description, html_filename):
 
         filtered_df = df[df['ReportState'].isin(states)]
 
@@ -278,7 +281,7 @@ class SportadminGamesAnalyzer:
         self.pretty_print(column_df, True, description, html_filename)
 
 
-    def distribution_per_week(self, df, states, description, html_filename):
+    def distribution_by_week(self, df, states, description, html_filename):
 
         # .copy() the filtered DataFrame to avoid
         # SettingWithCopyWarning: A value is trying to be set on a copy of a slice from a DataFrame.
@@ -311,10 +314,11 @@ if __name__ == "__main__":
 
     # Add arguments
     parser.add_argument('-o', '--obfuscate', action="store_true", help="Obsfuscate the player names in the output graphs")
+    parser.add_argument('-i', '--input', help="The raw input data", type=str, default="sportadmin.csv")
 
     # Parse the arguments
     args = parser.parse_args()
 
     sp = SportadminGamesAnalyzer(args)
-    sp.load("sportadmin.csv")
+    sp.load(args.input)
     sp.analyze()
