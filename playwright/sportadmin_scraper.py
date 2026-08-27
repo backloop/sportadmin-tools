@@ -12,6 +12,7 @@ from enum import IntEnum, auto
 import csv
 import sys
 import traceback
+import os
 
 DEFAULT_TIMEOUT = 10_000
 
@@ -66,7 +67,22 @@ def parseDate(date):
 class SportadminGamesScraper:
 
     def __init__(self, playwright:Playwright):
-        self.browser = playwright.chromium.launch(headless=False)
+        # Chromium can sporadically fail to launch in this environment; retry a few times.
+        headless_env = os.getenv("HEADLESS", "0").strip().lower()
+        headless = headless_env in ("1", "true", "yes", "y")
+
+        last_err = None
+        launch_args = ["--no-sandbox", "--disable-setuid-sandbox"]
+        for _ in range(5):
+            try:
+                self.browser = playwright.chromium.launch(headless=headless, args=launch_args)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                time.sleep(1)
+        if last_err is not None:
+            raise last_err
         self.context = self.browser.new_context()
         self.page = self.context.new_page()
 
@@ -251,17 +267,17 @@ class SportadminGamesScraper:
 
         # try to wait until the clicked tab becomes active/selected
         try:
-            expect(button).to_have_attribute("aria-selected", "true", timeout=DEFAULT_TIMEOUT)
+            expect(button).to_have_attribute("aria-selected", "true", timeout=3000)
         except Exception:
             try:
-                expect(button).to_have_class(re.compile(r"\bactive\b"), timeout=DEFAULT_TIMEOUT)
+                expect(button).to_have_class(re.compile(r"\bactive\b"), timeout=3000)
             except Exception:
                 pass
 
         # try to wait for a header label that matches the tab (if present)
         try:
             header = frame_locator.get_by_role("heading", name=re.compile(r"^(Kommer|Kommer ej|Ej svarat|Ej kallad)$"))
-            header.first.wait_for(state="visible", timeout=2000)
+            header.first.wait_for(state="visible", timeout=1500)
         except Exception:
             pass
 
@@ -278,17 +294,22 @@ class SportadminGamesScraper:
         #    #print("no players in this tab")
         #    return frame, None, None
 
-        # wait for table to become visible (retry once if it doesn't show)
+        # wait for table to attach/appear with a tight retry loop
         table = frame.locator("table.idealis-table")
         try:
-            table.wait_for(state="visible")
+            table.wait_for(state="attached", timeout=3000)
+            table.wait_for(state="visible", timeout=3000)
         except PlaywrightTimeoutError:
-            # re-click tab and retry
+            # re-click tab and retry once quickly
             button.click()
             self.wait_for_loading_bar_to_complete()
             frame = self.page.wait_for_selector("#vpframe_1").content_frame()
             table = frame.locator("table.idealis-table")
-            table.wait_for(state="visible", timeout=DEFAULT_TIMEOUT * 2)
+            table.wait_for(state="attached", timeout=3000)
+            try:
+                table.wait_for(state="visible", timeout=3000)
+            except PlaywrightTimeoutError:
+                raise PlaywrightTimeoutError("Table did not become visible after retry")
 
         # wait for last (relevant) row to become visible
         rows = frame.locator("table.idealis-table tbody tr")
@@ -299,7 +320,7 @@ class SportadminGamesScraper:
         # small stabilization window to avoid reading before filter applies
         prev = -1
         stable = 0
-        for _ in range(10):
+        for _ in range(6):
             count = rows.count()
             if count == prev:
                 stable += 1
@@ -308,7 +329,7 @@ class SportadminGamesScraper:
             else:
                 stable = 0
                 prev = count
-            time.sleep(0.1)
+            time.sleep(0.05)
         #rows.nth(player_count).wait_for(state="attached")
 
         #while rows.count() <= player_count:
@@ -649,6 +670,9 @@ class SportadminGamesScraper:
                 writer.writerow(player)
 
         # ---------------------
+        # Leave closing to caller so we can optionally repeat within one browser session.
+
+    def close(self) -> None:
         self.context.close()
         self.browser.close()
 
@@ -666,6 +690,7 @@ if __name__ == "__main__":
     arg_parser.add_argument("--start-date", help="Earliest allowed date (YYYY-MM-DD)", type=str, default="2001-01-01")
     arg_parser.add_argument("--end-date", help="Latest allowed date (YYYY-MM-DD)", type=str, default=datetime.now().strftime("%Y-%m-%d"))
     arg_parser.add_argument("--year", help="Year to match in Period dropdown after page load (e.g. 2025)", type=str, default="2025")
+    arg_parser.add_argument("--repeat", help="Repeat the scrape N times within one browser session", type=int, default=1)
     arg_parser.add_argument("--series-pattern", help="Substring to use when matching series names", type=str, default="")
     args = arg_parser.parse_args()
 
@@ -675,14 +700,20 @@ if __name__ == "__main__":
     with sync_playwright() as playwright:
         try:
             sp = SportadminGamesScraper(playwright)
-            sp.collect(
-                args.email,
-                args.password,
-                start_date,
-                end_date,
-                args.series_pattern,
-                args.year,
-            )
+            try:
+                for i in range(args.repeat):
+                    if args.repeat > 1:
+                        print(f"--- REPEAT {i + 1}/{args.repeat} ---")
+                    sp.collect(
+                        args.email,
+                        args.password,
+                        start_date,
+                        end_date,
+                        args.series_pattern,
+                        args.year,
+                    )
+            finally:
+                sp.close()
         except PlaywrightTimeoutError as e:
             print(e)
             traceback.print_exc()
