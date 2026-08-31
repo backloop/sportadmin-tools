@@ -1,1 +1,4 @@
 *.swp
+
+# Local login credentials — never commit
+.credentials

@@ -14,6 +14,8 @@ import sys
 import traceback
 import os
 
+from credentials import load_credentials
+
 DEFAULT_TIMEOUT = 10_000
 
 #
@@ -682,9 +684,11 @@ if __name__ == "__main__":
 
     arg_parser = argparse.ArgumentParser(description="Parse a date string with range check")
 
-    # Mandatory arguments
-    arg_parser.add_argument("email", help="User email (mandatory)")
-    arg_parser.add_argument("password", help="User password (mandatory)")
+    # Credentials are read only from the untracked .credentials file. They can
+    # never be passed on the command line or via environment variables.
+    arg_parser.add_argument("--credentials", default=None,
+                            help="Path to credentials file "
+                                 "(default: ./.credentials, then alongside this script)")
 
     # Optional arguments
     arg_parser.add_argument("--start-date", help="Earliest allowed date (YYYY-MM-DD)", type=str, default="2001-01-01")
@@ -697,6 +701,8 @@ if __name__ == "__main__":
     start_date = datetime.fromisoformat(args.start_date)
     end_date = datetime.fromisoformat(args.end_date)
 
+    email, password = load_credentials(args.credentials)
+
     with sync_playwright() as playwright:
         try:
             sp = SportadminGamesScraper(playwright)
@@ -705,8 +711,8 @@ if __name__ == "__main__":
                     if args.repeat > 1:
                         print(f"--- REPEAT {i + 1}/{args.repeat} ---")
                     sp.collect(
-                        args.email,
-                        args.password,
+                        email,
+                        password,
                         start_date,
                         end_date,
                         args.series_pattern,

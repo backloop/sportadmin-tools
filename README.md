@@ -5,8 +5,21 @@ Scrape website using Playwright+Python to easily traverse login/password page an
 ### Use pipenv to create a sandbox environment
     pipenv install
 
+### Credentials
+The scraper reads the SportAdmin login from an untracked `.credentials` file
+in the current directory (git-ignored, keep it `chmod 600`):
+
+    SPORTADMIN_EMAIL=you@example.com
+    SPORTADMIN_PASSWORD=your-password
+
+    chmod 600 .credentials
+
+File lookup order: `--credentials <path>` / `./.credentials` / `.credentials`
+next to the script. This file is the only source — credentials cannot be
+passed as command-line arguments or environment variables.
+
 ### Run commands inside pipenv
-    pipenv run python3 sportadmin_scraper.py loginmail password
+    pipenv run python3 sportadmin_scraper.py
     pipenv run python3 sportadmin_analyzer.py
 
 ## Tools
