@@ -5,18 +5,30 @@ from playwright.sync_api import Playwright, sync_playwright, expect, TimeoutErro
 
 import time
 import locale
+import logging
+import json
 from datetime import datetime
 import argparse
 
-from enum import IntEnum, auto
 import csv
 import sys
 import traceback
 import os
 
 from credentials import load_credentials
+import sa_checks
 
 DEFAULT_TIMEOUT = 10_000
+
+log = logging.getLogger("sportadmin")
+
+
+def _read_text(name):
+    return open(os.path.join(os.path.dirname(os.path.abspath(__file__)), name),
+                encoding="utf-8").read()
+
+
+BLAZOR_IDLE_JS = _read_text("blazor_idle.js")
 
 #
 # pipenv run playwright codegen https://www.sportadmin.se
@@ -68,7 +80,7 @@ def parseDate(date):
 
 class SportadminGamesScraper:
 
-    def __init__(self, playwright:Playwright):
+    def __init__(self, playwright:Playwright, verify=False):
         # Chromium can sporadically fail to launch in this environment; retry a few times.
         headless_env = os.getenv("HEADLESS", "0").strip().lower()
         headless = headless_env in ("1", "true", "yes", "y")
@@ -85,7 +97,15 @@ class SportadminGamesScraper:
                 time.sleep(1)
         if last_err is not None:
             raise last_err
-        self.context = self.browser.new_context()
+        # A wide viewport keeps every grid column present so the state/name
+        # cells never collapse. Leave locale at the browser default so the
+        # identity login page stays in English ("Log in").
+        self.context = self.browser.new_context(
+            viewport={"width": 1920, "height": 1080},
+        )
+        # WebSocket / MutationObserver instrumentation — installed in every frame
+        # (incl. the cross-origin attendance iframe) before any page script.
+        self.context.add_init_script(BLAZOR_IDLE_JS)
         self.page = self.context.new_page()
 
         # Set Swedish locale for date parsing
@@ -93,6 +113,15 @@ class SportadminGamesScraper:
 
         #self.page.set_default_timeout(DEFAULT_TIMEOUT)
         #self.page.set_default_navigation_timeout(DEFAULT_TIMEOUT)
+
+        self.verify = verify
+        self.verify_records = []       # per-match dicts (see sa_checks)
+        self.run_flags = []            # run-level anomaly codes
+        self.run_idx = 0               # 1-based, set by collect()
+        self._logged_in = False
+
+        self.start_date = None
+        self.end_date = None
 
         self.curr_month_year = None
 
@@ -106,13 +135,92 @@ class SportadminGamesScraper:
         self.year_label = None
         self.period_set = False
 
+    # ------------------------------------------------------------------ waits
+
+    def wait_for_blazor_idle(self, frame, quiet_ms=250, timeout_ms=6000,
+                             poll_ms=40, grace_ms=700):
+        """Block until the Blazor Server circuit in `frame` has finished a render.
+
+        `frame` must be a Frame (``page.wait_for_selector(...).content_frame()``),
+        not a FrameLocator. Settled == at least one new inbound RenderBatch since
+        the call (or `grace_ms` elapsed with nothing pending), every batch acked,
+        no inbound frame / DOM mutation for `quiet_ms`, and the reconnect modal
+        hidden. If the instrumentation is not present in `frame`, fall back to a
+        short DOM-quiet wait. Returns True if settled, False on timeout.
+        """
+        def probe():
+            try:
+                return frame.evaluate("""() => {
+                    const s = window.__blazorIdle;
+                    const now = Date.now();
+                    const m = document.querySelector('#components-reconnect-modal');
+                    const shown = !!(m && /components-reconnect-(show|failed)/.test(m.className));
+                    return s ? {have: true, frames: s.frames,
+                               sinceFrame: now - s.lastFrameTs,
+                               sinceMut: now - s.lastMutTs, modal: shown}
+                             : {have: false};
+                }""")
+            except Exception:
+                return None
+
+        p0 = probe()
+        if not p0 or not p0.get("have"):
+            log.debug("wait_for_blazor_idle: no __blazorIdle in frame, dom-quiet fallback")
+            return self._wait_dom_quiet(frame, quiet_ms=quiet_ms, timeout_ms=2500)
+
+        # Not every inbound SignalR frame is a RenderBatch that gets an ack, so
+        # tracking pending acks is unreliable — key on frame + DOM quiescence
+        # instead. `got_render` ensures the server actually responded.
+        base = p0["frames"]
+        start = time.time()
+        deadline = start + timeout_ms / 1000.0
+        last = p0
+        while time.time() < deadline:
+            s = probe()
+            if s and s.get("have"):
+                last = s
+                got_render = s["frames"] >= base + 1
+                elapsed_ms = (time.time() - start) * 1000
+                quiet = (s["sinceFrame"] > quiet_ms
+                         and s["sinceMut"] > quiet_ms
+                         and not s["modal"])
+                if quiet and (got_render or elapsed_ms > grace_ms):
+                    return True
+            time.sleep(poll_ms / 1000.0)
+        log.debug("wait_for_blazor_idle timeout: %s", last)
+        return False
+
+    def _wait_dom_quiet(self, frame, quiet_ms=250, timeout_ms=2500):
+        """Wait until no DOM mutation in `frame` for `quiet_ms` (bounded)."""
+        try:
+            frame.evaluate("""() => {
+                if (window.__domQuiet) return;
+                window.__domQuiet = {ts: Date.now()};
+                new MutationObserver(() => { window.__domQuiet.ts = Date.now(); })
+                  .observe(document.documentElement || document,
+                           {childList: true, subtree: true, characterData: true, attributes: true});
+            }""")
+        except Exception:
+            time.sleep(quiet_ms / 1000.0)
+            return False
+        deadline = time.time() + timeout_ms / 1000.0
+        while time.time() < deadline:
+            try:
+                since = frame.evaluate("() => Date.now() - (window.__domQuiet && window.__domQuiet.ts || 0)")
+            except Exception:
+                since = quiet_ms + 1
+            if since > quiet_ms:
+                return True
+            time.sleep(0.04)
+        return False
+
 
     def wait_for_loading_bar_to_complete(self):
         loader = self.page.locator(".viewport-frame-wrapper:has(#vpframe_1) .frame-loader")
         try:
             loader.wait_for(state="hidden", timeout=DEFAULT_TIMEOUT)
-        except TimeoutError:
-            pass
+        except PlaywrightTimeoutError:
+            log.debug("frame-loader still visible after %d ms", DEFAULT_TIMEOUT)
 
     def wait_for_matches_iframe_to_complete(self):
         #print("wait for table in iframe to complete loading")
@@ -144,27 +252,35 @@ class SportadminGamesScraper:
 
         #
         # NOTE:
-        # Waiting for a specific load_state  is not a definitive
-        # indicator that the element transformations have completed
-        # (Javascript activities are not monitored).
+        # The matches list is classic ASP (no WebSocket), so there is no render
+        # ack to key off. Waiting for a specific load_state is not enough (the
+        # series-filter JS keeps mutating the table afterwards — the original bug
+        # here read `rows.count` (a bound method, never == an int) so the loop was
+        # a fixed 0.4 s sleep and "89 rows instead of 13" slipped through).
         #
-        # Instead, the most reliable way seems to poll and
-        # check that the row count has stabilized. Not the
-        # solution I was hoping for ;(
+        # Now: require a non-zero row count that is stable across 3 consecutive
+        # polls, bounded by DEFAULT_TIMEOUT.
         #
-
-        # read match table rows
         rows = frame.locator("#tblMain tr")
 
-        # try to monitor when the javascript manipulation has completed
-        prev_row_count = 0
-        while True:
-            time.sleep(0.2)
-            tmp_row_count = rows.count
-            if tmp_row_count == prev_row_count:
-                break
+        prev = -1
+        stable = 0
+        deadline = time.time() + DEFAULT_TIMEOUT / 1000.0
+        while time.time() < deadline:
+            try:
+                n = rows.count()
+            except Exception:
+                n = -1
+            if n > 0 and n == prev:
+                stable += 1
+                if stable >= 3:
+                    break
             else:
-                prev_row_count = tmp_row_count
+                stable = 0
+                prev = n
+            time.sleep(0.15)
+        else:
+            log.warning("matches iframe row count did not stabilize (last=%s)", prev)
         return frame, rows
 
 
@@ -192,21 +308,56 @@ class SportadminGamesScraper:
         #print(self.series_count)
 
         # check end criteria
-        if self.series_idx == self.series_count:
-            print("all series done")
+        if self.series_idx >= self.series_count:
+            log.info("all %d series done", self.series_count)
             return None
 
         # select the current series
         serie = series.nth(self.series_idx)
         self.series_name = serie.inner_text().strip()
-        #print(self.series_name)
+
+        # Content oracle: require #tblMain to actually change after the click
+        # before trusting the post-filter row count (the classic-ASP filter JS
+        # keeps mutating the table for a moment).
+        before = self._matches_fingerprint()
         serie.click()
         self.wait_for_loading_bar_to_complete()
+        self._wait_matches_changed(before)
 
         frame, rows = self.wait_for_matches_iframe_to_complete()
         self.row_count = rows.count()
-        print("matches: ", self.row_count)
+        log.info("series %r: %d list rows", self.series_name, self.row_count)
         return rows
+
+    def _printa_frame(self):
+        """Return the real Frame for the classic-ASP matches table (name=printa)."""
+        for f in self.page.frames:
+            if f.name == "printa":
+                return f
+        return None
+
+    def _matches_fingerprint(self):
+        f = self._printa_frame()
+        if f is None:
+            return ""
+        try:
+            return f.evaluate("""() => {
+                const t = document.querySelector('#tblMain');
+                return t ? (t.rows.length + '|' + (t.innerText || '').slice(0, 400)) : '';
+            }""")
+        except Exception:
+            return ""
+
+    def _wait_matches_changed(self, before, timeout_ms=DEFAULT_TIMEOUT):
+        """Wait until #tblMain differs from `before` (series filter applied)."""
+        deadline = time.time() + timeout_ms / 1000.0
+        while time.time() < deadline:
+            cur = self._matches_fingerprint()
+            if cur and cur != before:
+                return True
+            time.sleep(0.1)
+        log.debug("matches table did not visibly change after series click")
+        return False
 
     def set_period_dropdown(self, year_label: str) -> None:
         # Period dropdown is select#group_pk on the "Matcher" page.
@@ -229,7 +380,7 @@ class SportadminGamesScraper:
                     time.sleep(0.2)
 
             if period_select is None:
-                print(f"Error: Period dropdown select#group_pk not found (wanted year '{year_label}').")
+                log.error("Period dropdown select#grupp_pk not found (wanted %r)", year_label)
                 sys.exit(2)
 
             options = period_select.locator("option").all_inner_texts()
@@ -237,377 +388,420 @@ class SportadminGamesScraper:
             matching = [opt for opt in options if year_pattern.search(opt)]
 
             if len(matching) == 1:
+                log.info("Period -> %r", matching[0])
                 period_select.select_option(label=matching[0])
                 self.wait_for_loading_bar_to_complete()
                 return
 
             if len(matching) == 0:
-                print(f"Error: No Period option matched year '{year_label}'.")
+                log.error("no Period option matched year %r", year_label)
             else:
-                print(f"Error: Multiple Period options matched year '{year_label}':")
-                for opt in matching:
-                    print(f"- {opt}")
+                log.error("multiple Period options matched year %r: %s", year_label, matching)
             sys.exit(2)
         except PlaywrightTimeoutError:
-            print(f"Warning: Period dropdown not set (timeout; wanted year '{year_label}')")
+            log.warning("Period dropdown not set (timeout; wanted year %r)", year_label)
 
 
-    def click_on_tab_and_read_for_table(self, tab_pattern):
-        frame_locator = self.page.frame_locator("#vpframe_1")
-        button = frame_locator.get_by_role("button", name=tab_pattern)
+    # One self-contained JS step: (re)locate the Virtualize scroll container,
+    # optionally scroll it, and return every currently-mounted person row plus
+    # the scroll position. `action` is 'top', 'down' or 'read'. A person row is
+    # one whose first cell is a birth year or that carries a non-action link; the
+    # stable id is the profile-link href when present, else "year|name".
+    _HARVEST_STEP_JS = r"""(action) => {
+        // The attendance grid is normally table.idealis-table; a very small tab
+        // sometimes renders a plain table, so fall back to the widest table that
+        // has a birth-year cell.
+        let table = document.querySelector('table.idealis-table');
+        if (!table) {
+            for (const t of document.querySelectorAll('table')) {
+                if ([...t.querySelectorAll('td')].some(td => /^(19|20)\d\d$/.test((td.innerText||'').trim()))) {
+                    table = t; break;
+                }
+            }
+        }
+        let cont = null;
+        if (table) {
+            let el = table.parentElement;
+            while (el && el !== document.body) {
+                const s = getComputedStyle(el);
+                if ((s.overflowY === 'auto' || s.overflowY === 'scroll')
+                    && el.scrollHeight > el.clientHeight + 4) { cont = el; break; }
+                el = el.parentElement;
+            }
+        }
+        if (!cont) cont = document.scrollingElement || document.documentElement;
 
-        # check in the button label if there are players to read
-        m = re.search(r"\((\d+)\/", button.inner_text())
-        player_count = int(m.group(1))
-        print(f"{player_count}, ", end="")
-        if player_count == 0:
-            return None, player_count
+        if (action === 'top') cont.scrollTop = 0;
+        else if (action === 'down')
+            cont.scrollTop = Math.min(cont.scrollTop + cont.clientHeight * 0.85,
+                                      cont.scrollHeight);
 
-        # else click on tab
-        button.click()
-        self.wait_for_loading_bar_to_complete()
+        const realHref = (a) => {
+            const h = a && a.getAttribute('href') || '';
+            return (!h || h === '#' || h.toLowerCase().startsWith('javascript:')) ? '' : h;
+        };
+        const rows = [];
+        let category = null;
+        const trs = table ? table.querySelectorAll('tr') : [];
+        for (const tr of trs) {
+            const tds = [...tr.querySelectorAll('td')];
+            if (!tds.length) continue;
+            const texts = tds.map(td => (td.innerText || '').trim());
+            const joined = texts.join(' ').trim();
+            if (tds.length <= 3 && /^(Medlemmar|Ledare)\b/.test(joined)) {
+                category = joined.indexOf('Ledare') === 0 ? 'Ledare' : 'Medlemmar';
+                continue;
+            }
+            let link = null, href = '';
+            for (const a of tr.querySelectorAll('td a')) {
+                const t = (a.textContent || '').trim();
+                if (!t || /^(Ändra|Visa|Ta bort|Redigera)$/.test(t)) continue;
+                link = a; href = realHref(a); break;
+            }
+            const year = texts.find(t => /^(19|20)\d\d$/.test(t)) || '';
+            if (!link && !year) continue;
+            const name = link ? (link.textContent || '').trim()
+                : (texts.find(t => /[A-Za-zÅÄÖåäö]{2,}\s+[A-Za-zÅÄÖåäö]/.test(t)) || '');
+            rows.push({href: href || (year + '|' + name), link_href: href,
+                       name, year, category, cells: texts});
+        }
+        return {
+            rows,
+            scroll: {top: cont.scrollTop, h: cont.clientHeight, sh: cont.scrollHeight},
+        };
+    }"""
 
-        # try to wait until the clicked tab becomes active/selected
-        try:
-            expect(button).to_have_attribute("aria-selected", "true", timeout=3000)
-        except Exception:
+    @staticmethod
+    def _clean_name(name):
+        """Strip the quit/external markers SportAdmin prepends; report if stripped."""
+        cleaned = re.sub(r'^\s*(?:warning\b[^\n]*\n[^\n]*\n?|S\s+|-\s+)', '', name).strip()
+        cleaned = cleaned.splitlines()[-1].strip() if "\n" in cleaned else cleaned
+        return cleaned, (cleaned != name.strip())
+
+    def read_tab(self, tab_pattern, tab_label):
+        """Click one attendance tab and scroll-harvest every member + leader row.
+
+        Returns a dict: label_N, label_M (from the "(N/M)" tab label; None if
+        unparsed), members/leaders (lists of {name, state, href}), scroll_iters,
+        flags.
+        """
+        flags = []
+        fl = self.page.frame_locator("#vpframe_1")
+        button = fl.get_by_role("button", name=tab_pattern)
+
+        label_txt = button.inner_text()
+        m = re.search(r"\((\d+)\s*/\s*(\d+)\)", label_txt)
+        if m:
+            label_N, label_M = int(m.group(1)), int(m.group(2))
+        else:
+            label_N = label_M = None
+            flags.append("tab_label_unparsed")
+
+        # Empty tab — nothing to click/scroll/harvest.
+        if label_N == 0 and label_M == 0:
+            return {"label_N": 0, "label_M": 0, "members": [], "leaders": [],
+                    "scroll_iters": 0, "flags": flags}
+
+        def step(action):
+            for attempt in range(4):
+                try:
+                    f = self.page.wait_for_selector("#vpframe_1").content_frame()
+                    return f.evaluate(self._HARVEST_STEP_JS, action)
+                except Exception as e:
+                    if attempt < 3 and ("Execution context was destroyed" in str(e)
+                                        or "detached" in str(e)):
+                        time.sleep(0.4)
+                        continue
+                    raise
+
+        # Click the tab and wait until the grid actually contains person rows
+        # (or, for a genuinely tiny tab, until it settles). Retry the click a
+        # couple of times — a Blazor tab switch occasionally drops the event.
+        frame = None
+        for click_try in range(3):
             try:
-                expect(button).to_have_class(re.compile(r"\bactive\b"), timeout=3000)
+                button.click(timeout=15000)
+            except PlaywrightTimeoutError:
+                log.debug("read_tab(%s): tab click timed out (try %d)", tab_label, click_try + 1)
+            frame = self.page.wait_for_selector("#vpframe_1").content_frame()
+            self.wait_for_blazor_idle(frame)
+            try:
+                expect(button).to_have_attribute("aria-selected", "true", timeout=2000)
             except Exception:
                 pass
+            ready = False
+            for _ in range(20):                       # up to ~4 s
+                try:
+                    rows = step("read")["rows"]
+                except Exception:
+                    rows = []
+                if rows:
+                    ready = True
+                    break
+                time.sleep(0.2)
+            if ready:
+                break
+        else:
+            # Every click attempt left the grid empty. For a labelled-non-empty
+            # tab that is a real miss; for a 0-member tab it is expected.
+            if label_N:
+                flags.append("tab_empty_after_clicks")
+                log.warning("read_tab(%s): grid empty after 3 clicks (label %s/%s)",
+                            tab_label, label_N, label_M)
+            return {"label_N": label_N, "label_M": label_M, "members": [],
+                    "leaders": [], "scroll_iters": 0, "flags": flags}
 
-        # try to wait for a header label that matches the tab (if present)
+        step("top")
+        self.wait_for_blazor_idle(frame)
+
+        harvested = {}          # key -> row dict (first-seen wins)
+        MAX_ITERS = 40
+        iters = 0
+        stale = 0
+        while iters < MAX_ITERS:
+            iters += 1
+            res = step("read")
+            added = 0
+            for r in res["rows"]:
+                key = r["href"] or ("name:" + r["name"])
+                if key not in harvested:
+                    harvested[key] = r
+                    added += 1
+
+            members_seen = sum(1 for r in harvested.values()
+                               if r["category"] != "Ledare")
+            sc = res["scroll"]
+            at_bottom = sc["top"] + sc["h"] >= sc["sh"] - 2
+
+            if label_N is not None and members_seen >= label_N and at_bottom:
+                break
+            if at_bottom and added == 0:
+                stale += 1
+                if stale >= 2:
+                    break
+            else:
+                stale = 0
+            frame = self.page.wait_for_selector("#vpframe_1").content_frame()
+            step("down")
+            self.wait_for_blazor_idle(frame)
+        else:
+            flags.append("scroll_iter_cap")
+            log.error("read_tab(%s): hit %d-iteration scroll cap "
+                      "(%d/%s members)", tab_label, MAX_ITERS, members_seen, label_N)
+
+        members, leaders = [], []
+        called_state = tab_label if tab_label in sa_checks.CALLED_STATES else None
+        for r in harvested.values():
+            name, dirty = self._clean_name(r["name"])
+            if dirty:
+                flags.append("name_dirty")
+            if called_state:
+                state = called_state
+            else:
+                # "Ej kallad" tab — the row's förhandsrapportering status.
+                cand = [c for c in r["cells"] if c in ("Tillgänglig", "Ej tillgänglig")]
+                state = cand[0] if cand else "Ej förhandsrapporterad"
+            rec = {"name": name, "state": state, "href": r["href"],
+                   "link_href": r.get("link_href", ""), "year": r.get("year", ""),
+                   "raw_cells": r["cells"]}
+            if r["category"] == "Ledare":
+                leaders.append(rec)
+            else:
+                members.append(rec)
+
+        if label_N and not members:
+            flags.append("tab_empty_but_labeled")
+
+        return {"label_N": label_N, "label_M": label_M, "members": members,
+                "leaders": leaders, "scroll_iters": iters, "flags": flags}
+
+
+    TABS = (
+        ("Kommer",    re.compile(r"^Kommer \(")),
+        ("Kommer ej", re.compile(r"^Kommer ej \(")),
+        ("Ej svarat", re.compile(r"^Ej svarat \(")),
+        ("Ej kallad", re.compile(r"^Ej kallad \(")),
+    )
+
+    def parse_single_match(self, row):
+        """Open one match from the list and harvest all four attendance tabs.
+
+        Returns (rows, "") where rows is a list of
+        [date, matchid, series, name, state] (empty list for a skipped/cancelled
+        match, None for a non-match row).
+        """
+        cells = row.locator("td")
+        if cells.count() != 9:
+            return (None, "")
+
+        matchid_txt = cells.nth(3).inner_text().strip()
+        if not matchid_txt.isdigit():
+            return (None, "")
+        matchid = int(matchid_txt)
+        if row.get_by_role("button", name="Visa").count() == 0:
+            return (None, "")
+
+        if self.curr_month_year is None:
+            log.warning("match %s appears before any month header; skipping", matchid)
+            self.run_flags.append("month_header_missing")
+            return (None, "")
+
+        date_txt = cells.nth(1).inner_text().strip().rstrip("!").rstrip()
         try:
-            header = frame_locator.get_by_role("heading", name=re.compile(r"^(Kommer|Kommer ej|Ej svarat|Ej kallad)$"))
-            header.first.wait_for(state="visible", timeout=1500)
+            d = datetime.strptime(date_txt, "%a %d")
+        except ValueError:
+            log.warning("match %s: unparseable date %r; skipping", matchid, date_txt)
+            self.run_flags.append("date_unparsed")
+            return (None, "")
+        date = d.replace(year=self.curr_month_year.year,
+                         month=self.curr_month_year.month)
+
+        # Per-row date filter — skip out-of-range rows but keep scanning the
+        # series (matches are not guaranteed chronological after filtering).
+        if self.start_date and date < self.start_date:
+            return ([], "")
+        if self.end_date and date > self.end_date:
+            return ([], "")
+
+        try:
+            row.get_by_role("button", name="Visa").click(timeout=20000)
+        except PlaywrightTimeoutError:
+            log.error("match %s: 'Visa' click timed out; skipping", matchid)
+            self.run_flags.append("visa_click_timeout")
+            return ([], "")
+        frame = self.page.wait_for_selector("#vpframe_1").content_frame()
+        if log.isEnabledFor(logging.DEBUG):
+            try:
+                diag = frame.evaluate(
+                    "() => ({url: location.href.split('?')[0], "
+                    "idle: !!window.__blazorIdle, "
+                    "frames: (window.__blazorIdle||{}).frames, "
+                    "ws: !!window.__blazorIdleInstalled})")
+                log.debug("match %s vpframe_1 diag: %s", matchid, diag)
+            except Exception as e:
+                log.debug("match %s diag failed: %s", matchid, e)
+        self.wait_for_blazor_idle(frame)
+        fl = self.page.frame_locator("#vpframe_1")
+        try:
+            fl.locator("table.idealis-table").first.wait_for(timeout=15000)
+        except PlaywrightTimeoutError:
+            log.error("match %s: attendance table never appeared; skipping", matchid)
+            self.run_flags.append("attendance_table_missing")
+            return ([], "")
+
+        struken = False
+        try:
+            dt = fl.get_by_role("heading", name="DATUM & TID") \
+                   .locator("xpath=following-sibling::div").inner_text()
+            struken = bool(re.search(r"Match struken", dt))
         except Exception:
             pass
 
-        # wait for iframe to complete loading
-        frame = self.page.wait_for_selector("#vpframe_1").content_frame()
-        frame.wait_for_load_state("domcontentloaded")
+        record = {
+            "run": self.run_idx,
+            "matchid": matchid,
+            "date": date.date().isoformat(),
+            "series": self.series_name,
+            "skipped": "struken" if struken else None,
+            "tabs": {},
+        }
+        if struken:
+            log.info("match %s (%s) struken — no rows", matchid, date.date())
+            if self.verify:
+                record["assertions"] = [r.as_dict() for r in sa_checks.check_match(record)]
+                record["result"] = "pass"
+                self.verify_records.append(record)
+            return ([], "")
 
-        # NOTE: Below never really worked...
-        #print("check if there table is empty without waiting")
-        #empty_group = frame.locator(".table-empty-group").is_visible(timeout=0)
-        #print(empty_group)
-        ##if frame.locator("div.table-empty-group").is_visible(timeout=0):
-        #if empty_group:
-        #    #print("no players in this tab")
-        #    return frame, None, None
-
-        # wait for table to attach/appear with a tight retry loop
-        table = frame.locator("table.idealis-table")
-        try:
-            table.wait_for(state="attached", timeout=3000)
-            table.wait_for(state="visible", timeout=3000)
-        except PlaywrightTimeoutError:
-            # re-click tab and retry once quickly
-            button.click()
-            self.wait_for_loading_bar_to_complete()
-            frame = self.page.wait_for_selector("#vpframe_1").content_frame()
-            table = frame.locator("table.idealis-table")
-            table.wait_for(state="attached", timeout=3000)
+        debug = log.isEnabledFor(logging.DEBUG)
+        match_rows = []
+        for tab_label, tab_pat in self.TABS:
             try:
-                table.wait_for(state="visible", timeout=3000)
-            except PlaywrightTimeoutError:
-                raise PlaywrightTimeoutError("Table did not become visible after retry")
+                t = self.read_tab(tab_pat, tab_label)
+            except PlaywrightTimeoutError as e:
+                log.error("match %s tab %s: %s", matchid, tab_label, e)
+                self.run_flags.append("tab_read_timeout")
+                t = {"label_N": None, "label_M": None, "members": [],
+                     "leaders": [], "scroll_iters": 0, "flags": ["read_timeout"]}
+            tab_ok = (t["label_N"] is not None
+                      and len(t["members"]) == t["label_N"]
+                      and not t["flags"])
+            slim = []
+            for mem in t["members"]:
+                m = {"name": mem["name"], "state": mem["state"],
+                     "href": mem["link_href"] or mem["href"]}
+                if debug or not tab_ok:
+                    m["raw_cells"] = mem["raw_cells"]
+                slim.append(m)
+            record["tabs"][tab_label] = {
+                "label_N": t["label_N"], "label_M": t["label_M"],
+                "parsed_members": len(t["members"]),
+                "parsed_leaders": len(t["leaders"]),
+                "scroll_iters": t["scroll_iters"],
+                "flags": t["flags"],
+                "members": slim,
+            }
+            for mem in t["members"]:
+                match_rows.append([date.date().isoformat(), matchid,
+                                   self.series_name, mem["name"], mem["state"]])
 
-        # wait for last (relevant) row to become visible
-        rows = frame.locator("table.idealis-table tbody tr")
-        # there might be more rows; e.g. "Ledare", but at least
-        # wait for known content (players + "Medlemmar")
-        rows.nth(player_count).wait_for(state="visible")
+        parsed = {lbl: record["tabs"][lbl]["parsed_members"] for lbl, _ in self.TABS}
+        labels = {lbl: record["tabs"][lbl]["label_N"] for lbl, _ in self.TABS}
+        log.info("match %s %s %-24s parsed=%s labels=%s",
+                 matchid, date.date(), self.series_name,
+                 list(parsed.values()), list(labels.values()))
 
-        # small stabilization window to avoid reading before filter applies
-        prev = -1
-        stable = 0
-        for _ in range(6):
-            count = rows.count()
-            if count == prev:
-                stable += 1
-                if stable >= 2:
-                    break
-            else:
-                stable = 0
-                prev = count
-            time.sleep(0.05)
-        #rows.nth(player_count).wait_for(state="attached")
+        if self.verify:
+            results = sa_checks.check_match(record)
+            record["assertions"] = [r.as_dict() for r in results]
+            record["flags"] = sa_checks.match_flags(record)
+            record["result"] = "pass" if all(r.ok for r in results) else "warn"
+            self.verify_records.append(record)
+            for r in results:
+                if not r.ok:
+                    log.warning("match %s FAIL %s: %s", matchid, r.id, r.detail)
 
-        #while rows.count() <= player_count:
-        #    #print("waiting for player data...")
-        #    print(".", end="")
-        #    time.sleep(0.2)
+        return (match_rows, "")
 
-        # NOTE:
-        # return a snapshot of the table data instead of returning
-        # a live locator that can change because of DOM updates
-
-        # Get a stable snapshot: list[list[str]] of cell texts
-        # Re-locate rows just before evaluation and retry once if the iframe navigates.
-        table_data = None
-        for attempt in range(2):
-            try:
-                rows = frame.locator("table.idealis-table tbody tr")
-                table_data = rows.evaluate_all(
-                    """trs => trs.map(tr =>
-                        Array.from(tr.querySelectorAll('td'), td => td.innerText.trim())
-                    )"""
-                )
-                break
-            except Exception as e:
-                if "Execution context was destroyed" in str(e) and attempt == 0:
-                    time.sleep(0.2)
-                    continue
-                raise
-
-        if table_data is None:
-            raise RuntimeError("Failed to read table data after retry")
-
-        return table_data, player_count
-
-
-    def parse_single_match(self, row):
-        data = []
-
-        # get cells in the row
-        cells = row.locator("td")
-
-        cell_count = cells.count()
-
-        # matchid cell
-        matchid_locator = cells.nth(3)
-
-        # row must have a series matchid in the correct cell
-        if matchid_locator.count() > 0 and \
-           matchid_locator.inner_text().isdigit():
-            matchid = int(matchid_locator.inner_text())
-            #print(matchid)
-
-            # "Visa" button
-            match_button = row.get_by_role("button", name="Visa")
-
-            # row must have a "Visa" button
-            if match_button.count() > 0:
-
-                # date - <weekday> <day of month>
-                date = cells.nth(1).inner_text().strip().rstrip("!").rstrip()
-                date = datetime.strptime(date, "%a %d")
-                date = date.replace(year=self.curr_month_year.year,
-                                    month=self.curr_month_year.month)
-                #print(date.date())
-
-                if date < start_date:
-                    print("too old activity")
-                    return (None, "")
-
-                if date > end_date:
-                    #print("too new activity")
-                    return (None, "done")
-
-                # This row is a match, go to match details.
-                match_button.click()
-                self.wait_for_loading_bar_to_complete()
-
-                # wait for iframe to complete loading
-                frame = self.page.wait_for_selector("#vpframe_1").content_frame()
-                frame.wait_for_load_state("networkidle")
-
-                # wait for table in iframe to complete loading
-                frame = self.page.frame_locator("#vpframe_1")
-                frame.locator("table.idealis-table").wait_for()
-
-                # check if the match is cancelled
-                _date = frame.get_by_role("heading", name="DATUM & TID") \
-                            .locator("xpath=following-sibling::div") \
-                            .inner_text()
-
-                pattern = re.compile(r"Match struken")
-                if pattern.search(_date):
-                    print("Match struken")
-                    return (None, "")
-
-                # intermedia debug print before we start extracting plater data
-                print("%s, %s, %s, " % (matchid, date.date(), self.series_name), end="")
-
-                # number players in each tab
-                summary = [0,] * 4
-
-                # tab data
-                tabs = (
-                    (0, "Kommer",    re.compile(r"^Kommer \(.*$")),
-                    (1, "Kommer ej", re.compile(r"^Kommer ej \(.*$")),
-                    (2, "Ej svarat", re.compile(r"^Ej svarat \(.*$")),
-                    (3, "Ej kallad", re.compile(r"^Ej kallad \(.*$")),
-                )
-
-                print("")
-                # iterate over each tab
-                for tab_idx, tab_label, tab_pattern in tabs:
-
-                    rows, player_count = self.click_on_tab_and_read_for_table(tab_pattern)
-
-                    # quick escape if there are no players in the tab
-                    if rows is None:
-                        continue
-
-                    # --- Find "Medlemmar" in column 1 ---
-                    row_idx = -1
-                    for i, row in enumerate(rows):
-                        if len(row) > 1 and row[1] == "Medlemmar":
-                            row_idx = i
-                            break
-
-                    # --- Read player rows until "Ledare" in column 1 ---
-                    nbr_players = 0
-                    for row in rows[row_idx + 1:]:
-                        label = row[1] if len(row) > 1 else ""
-                        if label == "Ledare":
-                            break
-
-                        name = row[2] if len(row) > 2 else ""
-
-                        if tab_label == "Ej kallad":
-                            state = (row[7] if len(row) > 7 else "").strip() or "Ej förhandsrapporterad"
-                        else:
-                            state = row[10] if len(row) > 10 else ""
-
-                        data.append([date.date(), matchid, self.series_name, name, state])
-                        nbr_players += 1
-
-
-                    #def td_text(row_handle, idx):
-                    #    """Return trimmed text of <td> at index idx for a given <tr> handle; '' if missing."""
-                    #    cells = row_handle.query_selector_all("td")
-                    #    if idx < 0 or idx >= len(cells):
-                    #        return ""
-                    #    return cells[idx].inner_text().strip()
-
-                    ## --- Find the row labeled "Medlemmar" in td[1] ---
-                    #row_idx = -1
-                    #for i, row in enumerate(rows):
-                    #    if td_text(row, 1) == "Medlemmar":
-                    #        row_idx = i
-                    #        break
-
-                    #if row_idx == -1:
-                    #    raise RuntimeError('Could not find the "Medlemmar" row')
-
-                    ## --- Read all player rows until we hit "Ledare" ---
-                    #nbr_players = 0
-                    #for row in rows[row_idx + 1 : row_count]:
-                    #    label = td_text(row, 1)
-                    #    if label == "Ledare":
-                    #        break
-
-                    #    name = td_text(row, 2)
-
-                    #    if tab_label == "Ej kallad":
-                    #        state = td_text(row, 7) or "Ej förhandsrapporterad"
-                    #    else:
-                    #        state = td_text(row, 10)
-
-                    #    data.append([date.date(), matchid, self.series_name, name, state])
-                    #    nbr_players += 1
-
-                    # Optional:
-                    # print(f'found "Medlemmar" at row {row_idx}, parsed {nbr_players} players')
-
-
-#                    # Find the row labelled "Medlemmar"
-#                    row_idx=0
-#                    for row_idx in range(row_count):
-#                        row = rows.nth(row_idx)
-#                        if row.locator("td").nth(1).inner_text() == 'Medlemmar':
-#                            break
-#                    #print("found Medlemmar at row ", row_idx)
-#
-#                    # Read all player rows
-#                    nbr_players = 0
-#                    for player_idx in range(row_idx+1, row_count):
-#                        row = rows.nth(player_idx)
-#                        #print(row.all_inner_texts())
-#                        #print(row.count())
-#
-#                        if (row_count == 0) or (row.locator("td").nth(1).inner_text() == 'Ledare'):
-#                            #print("no more players")
-#                            break
-#                        else:
-#                            nbr_players += 1
-#                            name = row.locator("td").nth(2).inner_text()
-#
-#                            if tab_label == "Ej kallad":
-#                                state = row.locator("td").nth(7).inner_text()
-#                                if len(state.strip()) == 0:
-#                                    state = "Ej förhandsrapporterad"
-#                            else:
-#                                state = row.locator("td").nth(10).inner_text()
-#                                #state = label
-#
-#                            data.append([date.date(), matchid, self.series_name, name, state])
-
-                    # accumulate the number of players
-                    if player_count != nbr_players:
-                        print(f"player count mismatchi ({tab_pattern}): expected {player_count} vs parsed {nbr_players} (rows: {row_idx}->{len(rows)})")
-                        for d in data:
-                            print(d)
-                        input("Press Enter to continue...")
-
-                    summary[tab_idx] = player_count
-
-                # debug
-                #for row in data:
-                #    print(row)
-                #print("="*40)
-
-                #
-                # END OF MATCH
-                #
-                print("")
-                print(", ".join(map(str, summary)))
-                return (data, "")
-        else:
-            return (None, "")
-
-    def collect(self,  email, password, start_date, end_date, series_pattern, year_label=None) -> None:
+    def collect(self, email, password, start_date, end_date, series_pattern,
+                year_label=None, run_idx=1, max_matches=0):
+        """Run one full scrape. Returns the list of harvested CSV rows."""
         self.year_label = year_label
+        self.start_date = start_date
+        self.end_date = end_date
+        self.run_idx = run_idx
+        self.max_matches = max_matches
+        self._match_n = 0
+        self.run_flags = []
+        # reset per-run navigation state
+        self.curr_month_year = None
+        self.series_count = 0
+        self.series_idx = -1
+        self.row_count = 0
+        self.row_idx = 0
+        self.series_name = ""
+        self.period_set = False
 
         #
-        # LOAD LOGIN PAGE
+        # LOGIN (once per browser session; later runs reuse the session)
         #
-        self.page.goto("https://identity.sportadmin.se/identity/account/login")
-
-        #
-        # GO TO PROFILE PAGE
-        #
-        self.page.locator("#loginemail").fill(email)
-        self.page.locator("#loginpass").fill(password)
-        self.page.get_by_role("button", name="Log in").click()
-        #self.page.locator("xpath=//form/button[@type='submit']").click()
-
-        # to load due to some "verifierar behörighet" and other
-        # activities that are performed. typically this takes
-        # less than 20 seconds
-
-#        #
-#        # SELECT PROFILE: NIKE-LEDARE
-#        #
-#        # sometimes this page is not loaded, so check that first.
-#        if self.driver.current_url == "https://identity.sportadmin.se/profile/user/gateway":
-#            #self.driver.find_element(By.CSS_SELECTOR, ".userprofile:nth-child(2) .title").click()
-#
-#            # auto-select the first element
-#            userprofile = self.driver.find_element(By.CLASS_NAME, "userprofile").click()
-#
-
-        #
-        # WAIT FOR DEFAULT PAGE TO LOADED
-        #
-        print("wait for iframes to start loading")
-        self.page.locator("#vpframe_1") \
-            .content_frame.locator(".idealis-fast-paginator") \
-            .first \
-            .wait_for(timeout=60000)
+        if not self._logged_in:
+            self.page.goto("https://identity.sportadmin.se/identity/account/login")
+            self.page.locator("#loginemail").fill(email)
+            self.page.locator("#loginpass").fill(password)
+            # Button label is locale-dependent ("Log in" / "Logga in"); the
+            # submit control inside the login form is the stable target.
+            login_btn = self.page.locator(
+                "#loginbutton, form button[type=submit], "
+                "button:has-text('Log in'), button:has-text('Logga in')").first
+            login_btn.click()
+            # "verifierar behörighet" and friends can take ~20 s
+            log.info("waiting for dashboard iframes")
+            self.page.locator("#vpframe_1") \
+                .content_frame.locator(".idealis-fast-paginator") \
+                .first \
+                .wait_for(timeout=60000)
+            self._logged_in = True
 
         #
         # ON ACTIVITIES LIST PAGE
@@ -619,108 +813,157 @@ class SportadminGamesScraper:
         # });
 
         #
-        # Itrate over all matches
+        # Iterate over every match in every matching series.
         #
         rows = self.load_matches_page(series_pattern)
 
         data = []
+        stuck_guard = 0
         while rows is not None:
+            # Safety net: the ASP row list is month-headers (1 cell) + matches
+            # (9 cells); anything else means the index walked off the end.
+            if self.row_idx > self.row_count + 5:
+                log.error("row index %d exceeded row count %d without advancing "
+                          "series; aborting series walk", self.row_idx, self.row_count)
+                self.run_flags.append("row_walk_overrun")
+                break
 
-            # select current row
             row = rows.nth(self.row_idx)
             self.row_idx += 1
 
-            # get table cells in the row
-            cells = row.locator("td")
+            cell_count = row.locator("td").count()
 
-            # number of td elements
-            cell_count = cells.count()
-
-            # row must have the correct number of cells
             if cell_count == 1:
-                # month+year
-                self.curr_month_year = datetime.strptime(cells.first.inner_text(), "%B %Y")
-                #print("Month: ", self.curr_month_year.date())
+                txt = row.locator("td").first.inner_text().strip()
+                try:
+                    self.curr_month_year = datetime.strptime(txt, "%B %Y")
+                except ValueError:
+                    log.debug("non-month single-cell row %r", txt)
                 continue
             elif cell_count == 9:
-                d, reason = self.parse_single_match(row)
-                #if d is not None:
-                #    for e in d:
-                #        print(e)
-
-                if reason == "done" and self.series_idx == (self.series_count-1):
-                    print("read all series and all matches")
-                    break
-                elif reason == "done":
-                    print("emulate that all rows are read")
-                    self.row_idx = self.row_count
-
+                d, _ = self.parse_single_match(row)
                 if d is not None:
                     data.extend(d)
-
-                # We likely clicked on the tabs in the match details page,
-                # "Tillbaka" button will take us to "Kallelser" instead of "Matcher".
-                #page.frame_locator("#vpframe_1").locator("button.btn.back-btn").click()
-                # so we click on "Matcher" instead before parsing each match
-
+                    self._match_n += 1
+                    if self.max_matches and self._match_n >= self.max_matches:
+                        log.info("stopping after --max-matches=%d", self.max_matches)
+                        break
+                # Match detail navigation replaced the list; rebuild it.
                 rows = self.load_matches_page(series_pattern)
+                stuck_guard = 0
                 continue
+            else:
+                stuck_guard += 1
+                if stuck_guard > 50:
+                    log.error("50 consecutive unrecognised rows; aborting")
+                    self.run_flags.append("unrecognised_rows")
+                    break
 
-        with open('sportadmin.csv', 'w', newline='') as csvfile:
-            writer = csv.writer(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
-            for player in data:
-                writer.writerow(player)
-
-        # ---------------------
-        # Leave closing to caller so we can optionally repeat within one browser session.
+        log.info("run %d: %d rows harvested; run flags: %s",
+                 self.run_idx, len(data), self.run_flags or "none")
+        return data
 
     def close(self) -> None:
         self.context.close()
         self.browser.close()
 
 
+def _write_csv(path, rows):
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f, delimiter=",", quotechar="|", quoting=csv.QUOTE_MINIMAL)
+        for r in rows:
+            w.writerow(r)
+    log.info("wrote %d rows -> %s", len(rows), path)
+
+
+def _write_jsonl(path, records):
+    with open(path, "w", encoding="utf-8") as f:
+        for rec in records:
+            f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+    log.info("wrote %d verify records -> %s", len(records), path)
+
+
 if __name__ == "__main__":
-    print("Hello World!")
+    ap = argparse.ArgumentParser(
+        description="Scrape SportAdmin match attendance into a CSV.")
 
-    arg_parser = argparse.ArgumentParser(description="Parse a date string with range check")
+    # Credentials are read only from the untracked .credentials file — never
+    # from the command line or environment.
+    ap.add_argument("--credentials", default=None,
+                    help="Path to credentials file "
+                         "(default: ./.credentials, then alongside this script)")
+    ap.add_argument("--start-date", default="2001-01-01",
+                    help="Earliest match date to keep (YYYY-MM-DD)")
+    ap.add_argument("--end-date", default=datetime.now().strftime("%Y-%m-%d"),
+                    help="Latest match date to keep (YYYY-MM-DD)")
+    ap.add_argument("--year", default="2025",
+                    help="Year to select in the Period dropdown")
+    ap.add_argument("--series-pattern", default="",
+                    help="Regex matched against series link names (e.g. vår)")
+    ap.add_argument("--runs", type=int, default=1,
+                    help="Scrape N times in one session; writes PREFIX.run{k}.csv "
+                         "per run and a majority-merged PREFIX.csv")
+    ap.add_argument("--repeat", type=int, default=None,
+                    help="Deprecated alias for --runs")
+    ap.add_argument("--out", default="sportadmin",
+                    help="Output path prefix (default: sportadmin)")
+    ap.add_argument("--verify", action="store_true",
+                    help="Run per-match consistency checks; write PREFIX_verify.jsonl")
+    ap.add_argument("--max-matches", type=int, default=0,
+                    help="Stop after N matches (tuning aid; 0 = all)")
+    ap.add_argument("--debug", action="store_true", help="Verbose logging")
+    args = ap.parse_args()
 
-    # Credentials are read only from the untracked .credentials file. They can
-    # never be passed on the command line or via environment variables.
-    arg_parser.add_argument("--credentials", default=None,
-                            help="Path to credentials file "
-                                 "(default: ./.credentials, then alongside this script)")
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
 
-    # Optional arguments
-    arg_parser.add_argument("--start-date", help="Earliest allowed date (YYYY-MM-DD)", type=str, default="2001-01-01")
-    arg_parser.add_argument("--end-date", help="Latest allowed date (YYYY-MM-DD)", type=str, default=datetime.now().strftime("%Y-%m-%d"))
-    arg_parser.add_argument("--year", help="Year to match in Period dropdown after page load (e.g. 2025)", type=str, default="2025")
-    arg_parser.add_argument("--repeat", help="Repeat the scrape N times within one browser session", type=int, default=1)
-    arg_parser.add_argument("--series-pattern", help="Substring to use when matching series names", type=str, default="")
-    args = arg_parser.parse_args()
-
+    runs = args.repeat if args.repeat is not None else args.runs
+    runs = max(1, runs)
+    prefix = args.out
     start_date = datetime.fromisoformat(args.start_date)
     end_date = datetime.fromisoformat(args.end_date)
-
     email, password = load_credentials(args.credentials)
 
+    exit_code = 0
     with sync_playwright() as playwright:
+        sp = SportadminGamesScraper(playwright, verify=args.verify)
+        all_runs = []
         try:
-            sp = SportadminGamesScraper(playwright)
-            try:
-                for i in range(args.repeat):
-                    if args.repeat > 1:
-                        print(f"--- REPEAT {i + 1}/{args.repeat} ---")
-                    sp.collect(
-                        email,
-                        password,
-                        start_date,
-                        end_date,
-                        args.series_pattern,
-                        args.year,
-                    )
-            finally:
-                sp.close()
+            for k in range(1, runs + 1):
+                if runs > 1:
+                    log.info("=== run %d/%d ===", k, runs)
+                rows = sp.collect(email, password, start_date, end_date,
+                                  args.series_pattern, args.year, run_idx=k,
+                                  max_matches=args.max_matches)
+                all_runs.append(rows)
+                _write_csv(f"{prefix}.run{k}.csv" if runs > 1 else f"{prefix}.csv", rows)
         except PlaywrightTimeoutError as e:
-            print(e)
+            log.error("PlaywrightTimeoutError: %s", e)
             traceback.print_exc()
-            input("Press Enter to continue...")
+            exit_code = 1
+        finally:
+            sp.close()
+
+        if runs > 1 and all_runs:
+            merged, nondet = sa_checks.row_majority(all_runs)
+            _write_csv(f"{prefix}.csv", merged)
+            if nondet:
+                exit_code = exit_code or 2
+                log.warning("%d non-deterministic (matchid,player) keys across %d runs",
+                            len(nondet), runs)
+                for nd in nondet[:20]:
+                    log.warning("  nondeterministic: %s", nd)
+
+        if args.verify:
+            _write_jsonl(f"{prefix}_verify.jsonl", sp.verify_records)
+            bad = [r for r in sp.verify_records if r.get("result") not in ("pass", None)]
+            if bad:
+                exit_code = exit_code or 2
+                log.warning("%d/%d matches did not pass verification",
+                            len(bad), len(sp.verify_records))
+
+    sys.exit(exit_code)
