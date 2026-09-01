@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Credentials are read from the untracked ./.credentials file (chmod 600); see credentials.py.
-PW_DISABLE_CRASHPAD=1 exec xvfb-run -a pipenv run python sportadmin_scraper.py --repeat 10 --series-pattern vår
+# 10 verified runs of the spring season (determinism check). Thin wrapper
+# around run_verify.sh — pass a baseline CSV as $1 to also diff against it.
+RUNS=10 SERIES="${SERIES:-vår}" YEAR="${YEAR:-2025}" exec ./run_verify.sh "$@"

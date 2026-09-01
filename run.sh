@@ -1,9 +1,14 @@
 #!/bin/bash
+set -euo pipefail
 
-# Credentials are read from the untracked ./.credentials file (chmod 600).
-# See credentials.py; use --credentials <path> to point elsewhere.
+# One scrape of the spring ("vår") season into sportadmin.csv.
+# Credentials come from the untracked ./.credentials file (chmod 600); see
+# credentials.py. Use --credentials <path> to point elsewhere.
 #
-#pipenv run python sportadmin_scraper.py --start-date 2025-05-01 --end-date 2025-05-31
-#pipenv run python sportadmin_scraper.py --year 2025
+# Other examples:
+#   pipenv run python sportadmin_scraper.py --series-pattern höst --year 2025
+#   pipenv run python sportadmin_scraper.py --start-date 2025-05-01 --end-date 2025-05-31
+#   ./run_verify.sh                       # 5 runs + consistency checks
 
-PW_DISABLE_CRASHPAD=1 exec xvfb-run -a pipenv run python sportadmin_scraper.py --series-pattern vår
+PW_DISABLE_CRASHPAD=1 exec xvfb-run -a pipenv run python sportadmin_scraper.py \
+    --series-pattern vår --year 2025
