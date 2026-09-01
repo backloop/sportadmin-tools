@@ -1,4 +1,11 @@
 *.swp
+__pycache__/
 
 # Local login credentials — never commit
 .credentials
+
+# Scrape outputs and verification artifacts
+/out/
+sportadmin.csv
+sportadmin.run*.csv
+*_verify.jsonl
