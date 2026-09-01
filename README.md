@@ -19,16 +19,58 @@ next to the script. This file is the only source — credentials cannot be
 passed as command-line arguments or environment variables.
 
 ### Run commands inside pipenv
-    pipenv run python3 sportadmin_scraper.py
+    pipenv run python3 sportadmin_scraper.py --series-pattern vår --year 2025
     pipenv run python3 sportadmin_analyzer.py
 
+Headful under Xvfb via `./run.sh`. Set `HEADLESS=1` to run headless.
+
 ## Tools
-### sportadmin_scaper.py
-* Scrapes all "match" entries and collects all available players' data. Currently only supports "current year", other filters may also still be hardcoded.
-* Stores the result in sportadmin.csv
+### sportadmin_scraper.py
+Scrapes every match in the matching series/period and writes
+`date,matchid,series,player_name,state` rows to `sportadmin.csv`
+(delimiter `,`, quotechar `|`). One row per club member per match, taken from
+the four attendance tabs (`Kommer`, `Kommer ej`, `Ej svarat`, `Ej kallad`).
+
+Key flags:
+
+| flag | meaning |
+|---|---|
+| `--series-pattern RE` | regex matched against series link names (e.g. `vår`) |
+| `--year YYYY` | Period dropdown selection |
+| `--start-date` / `--end-date` | keep only matches in the range |
+| `--runs N` | scrape N times; write `PREFIX.run{k}.csv` + a majority-merged `PREFIX.csv` |
+| `--out PREFIX` | output path prefix (default `sportadmin`) |
+| `--verify` | run per-match consistency checks; write `PREFIX_verify.jsonl` |
+| `--max-matches N` | stop after N matches (tuning aid) |
+| `--debug` | verbose logging |
+
+The attendance grid is Blazor Server (server-rendered DOM over a SignalR
+WebSocket) inside a cross-origin iframe and uses row virtualization.
+`blazor_idle.js` (installed via `add_init_script`) instruments the socket so
+`wait_for_blazor_idle()` can tell when a render batch has settled; each tab is
+then scroll-harvested until every row is read.
+
+### Verification
+
+`--verify` writes one JSON record per match to `PREFIX_verify.jsonl` with the
+tab labels `(N/M)`, parsed member/leader counts, and the result of eight
+consistency assertions (`sa_checks.py`) — e.g. Σ parsed members == Σ label N,
+every `(matchid, player)` unique across tabs, every state in the known set,
+no dirty names. Nothing is ever discarded: all harvested rows are written and
+anything suspect is flagged in the jsonl (`grep '"result": "warn"'`).
+
+`verify_scrape.py` re-runs the CSV-checkable subset offline, plus cross-run
+determinism and an optional `--baseline` diff:
+
+    ./run_verify.sh sportadmin_vt25.csv        # 5 runs + checks vs a baseline
+    pipenv run python verify_scrape.py --csv sportadmin.csv --season vår
+
+Note: re-scraping a past season, the `Ej kallad` tab reflects *current* club
+membership — players who have since left will be absent (and the tab labels
+exclude them too), so an old baseline can legitimately differ by those names.
 
 ### sportadmin_analyzer.py
-Reads sportadmin.csv and presents player statistics:
+Reads `sportadmin.csv` and presents player statistics:
 * Total reported availablility?
 * How many times did each player play in each team?
 * Which weekends did players play multiple games?
