@@ -97,7 +97,7 @@ class SportadminGamesAnalyzer:
                 date = datetime.datetime.strptime(row[0], "%Y-%m-%d")
 
                 # extract the series differentiator
-                series = re.sub(r"[PF][0-9]{2} [A-Ö-a-ö]+ ([A-D][1-5]), (vår|höst)", r"\g<1>", row[2])
+                series = re.sub(r"[PF][0-9]{2} [A-Ö-a-ö]+ ([A-D][1-5]?), (vår|höst)", r"\g<1>", row[2])
 
                 # remove trailing comment with syntax "<first name> [middle name] <last name> - <comment>"
                 row[3] = re.sub(r"(.*) - .*", r"\g<1>", row[3])
