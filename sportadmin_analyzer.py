@@ -31,7 +31,7 @@ class SportadminGamesAnalyzer:
     def __init__(self, args):
         self.args = args
 
-    def pretty_print(self, df, show_index, description, filename):
+    def pretty_print(self, df, show_index, description):
 
         with io.StringIO() as df_io:
             # !show_index - Print the DataFrame without the row index
@@ -46,35 +46,14 @@ class SportadminGamesAnalyzer:
         dedented_description = textwrap.dedent(description).strip()
         formatted_description= textwrap.fill(dedented_description, width=max_width)
 
-        with io.StringIO() as buffer:
-            # Redirect stdout to the buffer
-            original_stdout = sys.stdout
-            sys.stdout = buffer
-
-            print("")
-            print("="*max_width)
-            print(f"{self.season.upper()} {self.year}")
-            print("")
-            print(formatted_description)
-            print("")
-            print(df_string)
-            print("="*max_width)
-
-            # Reset stdout to its original value
-            sys.stdout = original_stdout
-
-            # Get the value from the buffer
-            captured_output = buffer.getvalue()
-
-            print(captured_output)
-            escaped_output = html.escape(captured_output)
-
-        # Step 4: Wrap the output in a <pre> tag to preserve formatting
-        html_output = f"<html><body><pre>{escaped_output}</pre></body></html>"
-
-        # Step 5: Write the HTML content to a file
-        with open(filename, "w") as file:
-            file.write(html_output)
+        print("")
+        print("="*max_width)
+        print(f"{self.season.upper()} {self.year}")
+        print("")
+        print(formatted_description)
+        print("")
+        print(df_string)
+        print("="*max_width)
 
 
     def load(self, filename):
@@ -182,8 +161,7 @@ class SportadminGamesAnalyzer:
                        Lista veckor som spelare dubblerat matcher och i
                        vilka serier de dubblerat vid varje tillfälle.
                        (matcher i andra åldersgrupper ej inräknade))
-                       """,
-                       "played_multiples.html")
+                       """)
 
 
     # minimum clique size for the client-side k-clique percolation
@@ -236,9 +214,56 @@ class SportadminGamesAnalyzer:
             "clique_k": self.CLIQUE_K,
             "nodes": nodes,
             "edges": edges,
+            "availability_table": self._series_breakdown_table(
+                (ReportState.PRE_REPORT_AVAILABLE, ReportState.CALLED_COMING), sort_by_total=True),
+            "played_table": self._series_breakdown_table(
+                (ReportState.CALLED_COMING,), sort_by_total=False),
+            "multiples_table": self._multiples_table((ReportState.CALLED_COMING,)),
         }
 
         self._write_play_network_html(network_data, "play_network.html")
+
+
+    def _multiples_table(self, states):
+        """Player x double-booked-week list for the given ReportState set,
+        JSON-friendly equivalent of multiples()'s ASCII table: which
+        players played more than one match in the same week, how many
+        times, and which series were involved each time."""
+
+        filtered_df = self.df[self.df['ReportState'].isin(states)]
+        grouped = filtered_df.groupby(["player name", "week"]).agg(
+            count=('week', 'size'),
+            series_names=('series', lambda x: ','.join(sorted(x)))
+        )
+        doubled = grouped[grouped['count'] > 1].reset_index()
+
+        rows = [{"player": player, "count": len(group), "occasions": group['series_names'].tolist()}
+                for player, group in doubled.groupby('player name')]
+        rows.sort(key=lambda r: (-r['count'], r['player']))
+        return rows
+
+
+    def _series_breakdown_table(self, states, sort_by_total):
+        """Player x series match-count table for the given ReportState set,
+        JSON-friendly equivalent of distribution_by_series()'s ASCII bar
+        chart (same grouping/sort semantics, plain data instead of bars).
+        Only players with at least one qualifying match appear."""
+
+        filtered_df = self.df[self.df['ReportState'].isin(states)]
+        counts = collections.defaultdict(collections.Counter)
+        for (player, series), count in filtered_df.groupby(['player name', 'series']).size().items():
+            counts[player][series] = int(count)
+
+        series_columns = sorted({s for c in counts.values() for s in c})
+        players = list(counts.keys())
+
+        if sort_by_total:
+            players.sort(key=lambda p: (-sum(counts[p].values()), p))
+        else:
+            players.sort(key=lambda p: tuple(-counts[p].get(s, 0) for s in series_columns) + (p,))
+
+        rows = [{"player": p, "counts": {s: counts[p].get(s, 0) for s in series_columns}} for p in players]
+        return {"series_columns": series_columns, "rows": rows}
 
 
     def _write_play_network_html(self, network_data, filename):
@@ -250,8 +275,13 @@ class SportadminGamesAnalyzer:
         # the inline <script> tag it gets embedded in
         json_str = json.dumps(network_data, ensure_ascii=False).replace("</", "<\\/")
 
+        page_title = f"Spelmönster {network_data['season'].upper()} {network_data['year']}"
+
+        html_out = template.replace("__NETWORK_DATA_JSON__", json_str)
+        html_out = html_out.replace("__PAGE_TITLE__", html.escape(page_title))
+
         with open(filename, "w", encoding="utf-8") as f:
-            f.write(template.replace("__NETWORK_DATA_JSON__", json_str))
+            f.write(html_out)
 
 
     def played_distribution(self):
@@ -260,15 +290,13 @@ class SportadminGamesAnalyzer:
                           """
                           Fördelning av spelade matcher per serie.
                           Varje streck är en match.
-                          """,
-                          "played_distribution_by_series.html")
+                          """)
 
         self.distribution_by_week(self.df,
                           (ReportState.CALLED_COMING,),
                           """
                           Fördelning av spelade matcher per serie och vecka.
-                          """,
-                          "played_distribution_by_week.html")
+                          """)
 
 
     def available_distribution(self):
@@ -278,13 +306,14 @@ class SportadminGamesAnalyzer:
                           """
                           Fördelning av tillgänglighet
                           (förhandsrapporterad som "tillgänglig" eller faktiskt spelat).
-                          Varje streck är en match.
+                          Varje streck är en match. Syftet med tabellen är att
+                          förstå om det finns spelare som aktivt undviker att
+                          anmäla sig till eller spela i vissa serier.
                           """,
-                          "available_distribution.html",
                           sort_by_total=True)
 
 
-    def multiples(self, df, states, description, html_filename):
+    def multiples(self, df, states, description):
 
         filtered_df = df[df['ReportState'].isin(states)]
 
@@ -310,10 +339,10 @@ class SportadminGamesAnalyzer:
             ).reset_index()
         sorted_df = multiples_df.sort_values(by='count', ascending=False)
 
-        self.pretty_print(sorted_df, False, description, html_filename)
+        self.pretty_print(sorted_df, False, description)
 
 
-    def distribution_by_series(self, df, states, description, html_filename, sort_by_total=False):
+    def distribution_by_series(self, df, states, description, sort_by_total=False):
 
         filtered_df = df[df['ReportState'].isin(states)]
 
@@ -362,10 +391,10 @@ class SportadminGamesAnalyzer:
         for column in series_columns:
             column_df[column] = column_df[column].apply(lambda x: ascii_bar(x))
 
-        self.pretty_print(column_df, True, description, html_filename)
+        self.pretty_print(column_df, True, description)
 
 
-    def distribution_by_week(self, df, states, description, html_filename):
+    def distribution_by_week(self, df, states, description):
 
         # .copy() the filtered DataFrame to avoid
         # SettingWithCopyWarning: A value is trying to be set on a copy of a slice from a DataFrame.
@@ -388,7 +417,7 @@ class SportadminGamesAnalyzer:
         # Fill missing values (indicating no entry) with 0
         pivot_df = pivot_df.fillna('')
 
-        self.pretty_print(pivot_df, True, description, html_filename)
+        self.pretty_print(pivot_df, True, description)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-<title>Spelmönster</title>
+<title>__PAGE_TITLE__</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=Karla:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -83,6 +83,15 @@
     margin: 6px 0 0;
     text-wrap: balance;
   }
+  .dist-section h2 {
+    font-family: Archivo, system-ui, sans-serif;
+    font-weight: 700;
+    font-size: clamp(20px, 2.6vw, 26px);
+    letter-spacing: -0.005em;
+    margin: 4px 0 0;
+    text-wrap: balance;
+  }
+  .dist-section .lede { margin-top: 2px; }
   .lede {
     max-width: 62ch;
     color: var(--ink-secondary);
@@ -299,6 +308,51 @@
   .series-bar-fill { height: 100%; border-radius: 4px; background: var(--focus); }
   .series-bar-row .s-count { font-family: "IBM Plex Mono", monospace; font-size: 12px; text-align: right; color: var(--ink-secondary); }
 
+  .dist-section { display: flex; flex-direction: column; gap: 10px; }
+  .dist-table-wrap {
+    overflow-x: auto;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  table.dist-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table.dist-table th, table.dist-table td {
+    text-align: left;
+    padding: 5px 14px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  table.dist-table thead th {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-muted);
+    font-weight: 600;
+  }
+  table.dist-table td.player { font-weight: 500; color: var(--ink); }
+  table.dist-table tr:last-child td { border-bottom: none; }
+  table.dist-table tr:hover td { background: var(--surface-sunken); }
+  .bar-cell-inner { display: flex; align-items: center; gap: 8px; }
+  .bar-track { height: 8px; flex: none; }
+  /* one segment per match ("varje streck är en match"), a 1px gap of the
+     track's own background between each — the unit width (11px solid +
+     1px gap = 12px period) must match the JS unitPx passed to renderDistTable */
+  .bar-fill {
+    height: 100%;
+    background-image: repeating-linear-gradient(
+      to right,
+      var(--focus) 0, var(--focus) 11px,
+      transparent 11px, transparent 12px
+    );
+  }
+  .bar-count {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    color: var(--ink-secondary);
+    min-width: 1.6em;
+    text-align: right;
+  }
+
   .copair-list { display: flex; flex-direction: column; gap: 2px; }
   .copair-row {
     display: flex; justify-content: space-between; align-items: baseline;
@@ -346,6 +400,51 @@
 </style>
 
 <div class="page">
+  <section class="dist-section">
+    <div class="eyebrow">Säsongsöversikt</div>
+    <h2>Fördelning av tillgänglighet</h2>
+    <p class="lede">
+      (förhandsrapporterad som "tillgänglig" eller faktiskt spelat).
+      Varje streck är en match. Syftet med tabellen är att förstå om det
+      finns spelare som aktivt undviker att anmäla sig till eller spela i
+      vissa serier.
+    </p>
+    <div class="dist-table-wrap">
+      <table class="dist-table" id="availabilityDistTable">
+        <thead><tr><th>Spelare</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="dist-section">
+    <div class="eyebrow">Säsongsöversikt</div>
+    <h2>Fördelning av spelade matcher per serie</h2>
+    <p class="lede">Varje streck är en match.</p>
+    <div class="dist-table-wrap">
+      <table class="dist-table" id="playedDistTable">
+        <thead><tr><th>Spelare</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="dist-section">
+    <div class="eyebrow">Säsongsöversikt</div>
+    <h2>Dubbelbokade veckor</h2>
+    <p class="lede">
+      Lista över veckor som spelare dubblerat matcher och i vilka serier de
+      dubblerat vid varje tillfälle. Matcher i andra åldersgrupper är inte
+      inräknade.
+    </p>
+    <div class="dist-table-wrap">
+      <table class="dist-table" id="multiplesTable">
+        <thead><tr><th>Spelare</th><th>Tillfällen</th><th>Serier per tillfälle</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
   <header>
     <div class="eyebrow">Spelmönster · samspelsanalys</div>
     <h1>Vilka spelar med vilka?</h1>
@@ -367,8 +466,8 @@
     </div>
     <div class="control-group">
       <label class="control-label" for="minWeight">Minst antal matcher ihop</label>
-      <input type="range" id="minWeight" min="1" max="7" value="2" step="1">
-      <span id="minWeightValue" aria-hidden="true">2</span>
+      <input type="range" id="minWeight" min="1" max="7" value="4" step="1">
+      <span id="minWeightValue" aria-hidden="true">4</span>
     </div>
     <button class="reset" id="resetBtn" type="button">Återställ</button>
     <div class="legend" id="legend"></div>
@@ -443,6 +542,65 @@ const NETWORK_DATA = __NETWORK_DATA_JSON__;
       ' · ', bold(String(NETWORK_DATA.matches)), ' matcher · serierna ',
       bold(NETWORK_DATA.series_list.join(', '))
     );
+  })();
+
+  // ---- season-overview bar tables (static, independent of the graph below) ----
+  function renderDistTable(tableEl, tableData, unitPx) {
+    const { series_columns, rows } = tableData;
+    const maxCount = Math.max(1, ...rows.map(r => Math.max(...series_columns.map(s => r.counts[s] || 0))));
+    const trackWidth = maxCount * unitPx;
+
+    const headRow = tableEl.querySelector('thead tr');
+    series_columns.forEach(s => {
+      const th = document.createElement('th');
+      th.textContent = s;
+      headRow.appendChild(th);
+    });
+
+    const tbody = tableEl.querySelector('tbody');
+    rows.forEach(r => {
+      const tr = document.createElement('tr');
+      const tdName = document.createElement('td');
+      tdName.className = 'player';
+      tdName.textContent = r.player;
+      tr.appendChild(tdName);
+      series_columns.forEach(s => {
+        const count = r.counts[s] || 0;
+        const td = document.createElement('td');
+        const inner = document.createElement('div'); inner.className = 'bar-cell-inner';
+        const track = document.createElement('div'); track.className = 'bar-track';
+        track.style.width = trackWidth + 'px';
+        const fill = document.createElement('div'); fill.className = 'bar-fill';
+        fill.style.width = (count * unitPx) + 'px';
+        track.appendChild(fill);
+        const countEl = document.createElement('span'); countEl.className = 'bar-count';
+        countEl.textContent = count || '';
+        inner.append(countEl, track);
+        td.appendChild(inner);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  renderDistTable(document.getElementById('availabilityDistTable'), NETWORK_DATA.availability_table, 12);
+  renderDistTable(document.getElementById('playedDistTable'), NETWORK_DATA.played_table, 12);
+
+  (function renderMultiplesTable() {
+    const tbody = document.querySelector('#multiplesTable tbody');
+    NETWORK_DATA.multiples_table.forEach(r => {
+      const tr = document.createElement('tr');
+      const tdName = document.createElement('td');
+      tdName.className = 'player';
+      tdName.textContent = r.player;
+      const tdCount = document.createElement('td');
+      tdCount.className = 'bar-count';
+      tdCount.textContent = r.count;
+      const tdOccasions = document.createElement('td');
+      tdOccasions.textContent = r.occasions.join(' · ');
+      tr.append(tdName, tdCount, tdOccasions);
+      tbody.appendChild(tr);
+    });
   })();
 
   // clustering itself is computed live (see computeClusters/recluster below,
@@ -835,6 +993,20 @@ const NETWORK_DATA = __NETWORK_DATA_JSON__;
       y: H / 2 + Math.sin(i * angleStep - Math.PI / 2) * anchorR,
     }));
 
+    // Seed every node near its (new) primary cluster's anchor rather than
+    // leaving it wherever it happened to be. A force layout with this many
+    // nodes and only a weak anchor pull (0.10) can settle into a tangled,
+    // visually-overlapping local minimum depending on where nodes started —
+    // more simulation time does NOT fix that, it just converges faster to
+    // whichever minimum the starting positions were already headed for.
+    // Starting close to the right place removes that dependency entirely.
+    nodes.forEach(n => {
+      const pc = primaryCluster(n);
+      const target = pc === null ? { x: W / 2, y: H / 2 } : anchors[pc];
+      n.x = target.x + (Math.random() - 0.5) * 30;
+      n.y = target.y + (Math.random() - 0.5) * 30;
+    });
+
     renderLegend();
     renderRoster();
     statClusterCount.textContent = clusters.length;
@@ -860,7 +1032,7 @@ const NETWORK_DATA = __NETWORK_DATA_JSON__;
     linkSel.attr('stroke', d => sharedClusterColor(d.source.id || d.source, d.target.id || d.target) || edgeNeutral);
 
     selectNode(null);
-    simulation.alpha(0.5).restart();
+    simulation.alpha(1).restart();
     applyFilters();
   }
 
@@ -902,10 +1074,15 @@ const NETWORK_DATA = __NETWORK_DATA_JSON__;
 
   resetBtn.addEventListener('click', () => {
     searchInput.value = '';
-    minWeightInput.value = 2;
-    recluster(2);
+    minWeightInput.value = 4;
+    recluster(4);
   });
 
   recluster(+minWeightInput.value);
+
+  // recluster() already seeds nodes near their anchor; fast-forward the
+  // remaining settle synchronously so the very first paint is already
+  // calm instead of visibly animating in from the jittered seed.
+  for (let i = 0; i < 300; i++) simulation.tick();
 })();
 </script>
