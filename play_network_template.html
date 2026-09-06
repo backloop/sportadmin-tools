@@ -1,0 +1,911 @@
+<title>Spelmönster</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=Karla:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --surface: #f7f8f3;
+    --surface-raised: #ffffff;
+    --surface-sunken: #eef0e6;
+    --ink: #14170f;
+    --ink-secondary: #4b5245;
+    --ink-muted: #7c8271;
+    --border: #dde1d3;
+    --border-strong: #c7cdb9;
+    --focus: #2a78d6;
+    --group-0: #2a78d6;
+    --group-1: #eb6834;
+    --group-2: #1baf7a;
+    --edge-neutral: #7c8271;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --surface: #14160f;
+      --surface-raised: #1b1e15;
+      --surface-sunken: #101208;
+      --ink: #f2f3ee;
+      --ink-secondary: #c7cabb;
+      --ink-muted: #8b8f7d;
+      --border: #33362a;
+      --border-strong: #454838;
+      --focus: #3987e5;
+      --group-0: #3987e5;
+      --group-1: #d95926;
+      --group-2: #199e70;
+      --edge-neutral: #8b8f7d;
+    }
+  }
+  :root[data-theme="dark"] {
+    --surface: #14160f;
+    --surface-raised: #1b1e15;
+    --surface-sunken: #101208;
+    --ink: #f2f3ee;
+    --ink-secondary: #c7cabb;
+    --ink-muted: #8b8f7d;
+    --border: #33362a;
+    --border-strong: #454838;
+    --focus: #3987e5;
+    --group-0: #3987e5;
+    --group-1: #d95926;
+    --group-2: #199e70;
+    --edge-neutral: #8b8f7d;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--surface);
+    color: var(--ink);
+    font-family: Karla, system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 40px 28px 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+  }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+  h1 {
+    font-family: Archivo, system-ui, sans-serif;
+    font-weight: 800;
+    font-size: clamp(28px, 4vw, 40px);
+    letter-spacing: -0.01em;
+    margin: 6px 0 0;
+    text-wrap: balance;
+  }
+  .lede {
+    max-width: 62ch;
+    color: var(--ink-secondary);
+    font-size: 16px;
+    line-height: 1.55;
+    margin: 10px 0 0;
+  }
+  .dataset-line {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    color: var(--ink-muted);
+    margin-top: 4px;
+  }
+  .dataset-line b { color: var(--ink-secondary); font-weight: 600; }
+
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .stat-tile {
+    background: var(--surface-raised);
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .stat-label {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+  .stat-value {
+    font-family: "IBM Plex Mono", monospace;
+    font-weight: 600;
+    font-size: 26px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 20px;
+    padding: 14px 16px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .control-label {
+    font-size: 12px;
+    color: var(--ink-muted);
+    white-space: nowrap;
+  }
+  input[type="search"] {
+    font: inherit;
+    font-size: 14px;
+    padding: 7px 10px;
+    border-radius: 7px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--ink);
+    width: 190px;
+  }
+  input[type="search"]:focus-visible,
+  button:focus-visible,
+  .legend-chip:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  input[type="range"] {
+    accent-color: var(--focus);
+    width: 120px;
+  }
+  #minWeightValue {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    min-width: 1.4em;
+    display: inline-block;
+    text-align: right;
+  }
+  button.reset {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 7px 14px;
+    border-radius: 7px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--ink-secondary);
+    cursor: pointer;
+  }
+  button.reset:hover { color: var(--ink); border-color: var(--ink-muted); }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-left: auto;
+  }
+  .legend-chip {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 11px 6px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    font-size: 12.5px;
+    color: var(--ink-secondary);
+    cursor: pointer;
+    line-height: 1;
+  }
+  .legend-chip[data-active="false"] { opacity: 0.4; }
+  .legend-swatch {
+    width: 10px; height: 10px; border-radius: 50%;
+    flex: none;
+  }
+  .legend-chip b { color: var(--ink); font-weight: 600; font-family: "IBM Plex Mono", monospace; }
+
+  .workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 16px;
+    align-items: start;
+  }
+  @media (max-width: 820px) {
+    .workspace { grid-template-columns: 1fr; }
+  }
+
+  .graph-frame {
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+  }
+  .graph-frame svg { display: block; width: 100%; height: auto; cursor: grab; }
+  .graph-frame svg:active { cursor: grabbing; }
+
+  .node circle { stroke: var(--surface-sunken); stroke-width: 1.5px; }
+  .node text {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 9.5px;
+    fill: var(--ink-secondary);
+    pointer-events: none;
+  }
+  .node.dim { opacity: 0.16; }
+  .hit { fill: transparent; pointer-events: all; cursor: pointer; }
+  .edge.dim { opacity: 0.05 !important; }
+
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: var(--surface-raised);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12.5px;
+    color: var(--ink-secondary);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+    opacity: 0;
+    transform: translate(-50%, -100%);
+    transition: opacity 0.08s ease;
+    max-width: 220px;
+    z-index: 5;
+  }
+  .tooltip.visible { opacity: 1; }
+  .tooltip .t-name { font-weight: 700; color: var(--ink); font-size: 13px; }
+  .tooltip .t-games { font-family: "IBM Plex Mono", monospace; }
+
+  .panel {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+    min-height: 200px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .panel h2 {
+    font-family: Archivo, sans-serif;
+    font-size: 16px;
+    font-weight: 700;
+    margin: 0;
+  }
+  .panel .muted { color: var(--ink-muted); font-size: 13px; line-height: 1.5; }
+  .panel .group-tags { display: flex; flex-direction: column; gap: 4px; }
+  .panel .group-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--ink-secondary);
+    font-family: "IBM Plex Mono", monospace;
+  }
+  .group-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .series-bars { display: flex; flex-direction: column; gap: 6px; }
+  .series-bar-row { display: grid; grid-template-columns: 34px 1fr 24px; align-items: center; gap: 8px; }
+  .series-bar-row .s-label { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--ink-muted); }
+  .series-bar-track { height: 8px; border-radius: 4px; background: var(--surface-sunken); overflow: hidden; }
+  .series-bar-fill { height: 100%; border-radius: 4px; background: var(--focus); }
+  .series-bar-row .s-count { font-family: "IBM Plex Mono", monospace; font-size: 12px; text-align: right; color: var(--ink-secondary); }
+
+  .copair-list { display: flex; flex-direction: column; gap: 2px; }
+  .copair-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 5px 0; border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .copair-row:last-child { border-bottom: none; }
+  .copair-row .c-weight { font-family: "IBM Plex Mono", monospace; color: var(--ink-muted); font-size: 12px; }
+
+  .method-note {
+    font-size: 12.5px;
+    color: var(--ink-muted);
+    line-height: 1.6;
+    max-width: 74ch;
+  }
+
+  details.table-toggle summary {
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink-secondary);
+    padding: 4px 0;
+  }
+  .table-scroll { overflow-x: auto; margin-top: 10px; }
+  table.roster {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13px;
+  }
+  table.roster th, table.roster td {
+    text-align: left;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  table.roster th {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-muted);
+    font-weight: 600;
+  }
+  table.roster td.num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+  table.roster tr:hover td { background: var(--surface-sunken); }
+</style>
+
+<div class="page">
+  <header>
+    <div class="eyebrow">Spelmönster · samspelsanalys</div>
+    <h1>Vilka spelar med vilka?</h1>
+    <p class="lede">
+      Varje punkt är en spelare, varje linje betyder att två spelare kommit
+      till samma match. Ju fler matcher ihop, desto starkare drar länken
+      dem samman i simuleringen nedan — grupperna som bildas är beräknade
+      utifrån detta mönster, inte utifrån anmäld serietillhörighet.
+    </p>
+    <div class="dataset-line" id="datasetLine"></div>
+  </header>
+
+  <div class="stat-row" id="statRow"></div>
+
+  <div class="controls">
+    <div class="control-group">
+      <label class="control-label" for="searchInput">Sök spelare</label>
+      <input type="search" id="searchInput" placeholder="t.ex. Felix" autocomplete="off">
+    </div>
+    <div class="control-group">
+      <label class="control-label" for="minWeight">Minst antal matcher ihop</label>
+      <input type="range" id="minWeight" min="1" max="7" value="2" step="1">
+      <span id="minWeightValue" aria-hidden="true">2</span>
+    </div>
+    <button class="reset" id="resetBtn" type="button">Återställ</button>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="workspace">
+    <div class="graph-frame" id="graphFrame">
+      <svg id="graphSvg" viewBox="0 0 860 600" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="tooltip" id="tooltip"></div>
+    </div>
+    <aside class="panel" id="panel">
+      <h2>Utforska</h2>
+      <p class="muted">Klicka på en spelare för att se vilka hen oftast spelar med. Dra i punkterna eller scrolla för att zooma.</p>
+    </aside>
+  </div>
+
+  <p class="method-note">
+    Grupperna räknas om varje gång du flyttar reglaget "Minst antal matcher
+    ihop": den siffran avgör både vilka linjer som ritas och vilka spelare som
+    räknas tätt sammankopplade just nu. Det är alltså inte en fullständig
+    indelning — en spelare kan tillhöra en grupp, flera (om hen är en bro
+    mellan två tajta grupper, visas det som en ring i en till färg) eller
+    ingen alls, om ingen av hens matcher delas med tillräckligt många andra
+    vid den här inställningen. Lågt reglage visar breda, löst sammanhängande
+    grupper; högt reglage visar bara den absoluta kärnan.
+  </p>
+
+  <details class="table-toggle">
+    <summary>Visa som tabell</summary>
+    <div class="table-scroll">
+      <table class="roster" id="rosterTable">
+        <thead>
+          <tr><th>Spelare</th><th>Grupp</th><th>Mest spelad serie</th><th>Matcher</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </details>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+const NETWORK_DATA = __NETWORK_DATA_JSON__;
+
+(function() {
+  const root = document.documentElement;
+  const cs = getComputedStyle(root);
+  function token(name) { return getComputedStyle(document.body).getPropertyValue(name).trim(); }
+
+  const groupColors = [token('--group-0'), token('--group-1'), token('--group-2')];
+  const edgeNeutral = token('--edge-neutral');
+  const minorClusterColor = edgeNeutral;
+  const unclusteredColor = token('--border-strong');
+  const UNCLUSTERED = -1;
+  const CLIQUE_K = NETWORK_DATA.clique_k;
+
+  // clusters are ranked by size; only the top 3 get a real, distinct hue
+  // (the dataviz palette only clears CVD-safety checks for 3 categorical
+  // slots at once) — rank 3+ shares the muted "minor cluster" tone.
+  function colorForCluster(id) {
+    return id < groupColors.length ? groupColors[id] : minorClusterColor;
+  }
+  function primaryCluster(d) {
+    return d.clusters.length ? d.clusters[0] : null;
+  }
+
+  (function renderDatasetLine() {
+    const line = document.getElementById('datasetLine');
+    function bold(text) { const b = document.createElement('b'); b.textContent = text; return b; }
+    line.append(
+      'Data: ', bold(`${NETWORK_DATA.season.toUpperCase()} ${NETWORK_DATA.year}`),
+      ' · ', bold(String(NETWORK_DATA.matches)), ' matcher · serierna ',
+      bold(NETWORK_DATA.series_list.join(', '))
+    );
+  })();
+
+  // clustering itself is computed live (see computeClusters/recluster below,
+  // driven by the "minst antal matcher ihop" slider) — until the first
+  // recluster() call, every node starts with no membership
+  const nodes = NETWORK_DATA.nodes;
+  nodes.forEach(n => { n.clusters = []; });
+  const edges = NETWORK_DATA.edges;
+  const maxWeight = Math.max(...edges.map(e => e.weight));
+  const nodeById = new Map(nodes.map(n => [n.id, n]));
+  const linkData = edges.map(e => ({ source: e.source, target: e.target, weight: e.weight }));
+
+  let clusters = [];
+  let anchors = [];
+  let activeGroups = new Set();
+
+  // ---- stat row (two tiles get stable ids so recluster() can update them) ----
+  const statRow = document.getElementById('statRow');
+  const statDefs = [
+    { label: 'Spelare', value: nodes.length },
+    { label: 'Matcher analyserade', value: NETWORK_DATA.matches },
+    { label: 'Par som spelat ihop', value: edges.length },
+    { label: 'Täta grupper', id: 'statClusterCount', value: '' },
+    { label: 'Utan tät grupp', id: 'statUnclusteredCount', value: '' },
+  ];
+  statDefs.forEach(s => {
+    const tile = document.createElement('div');
+    tile.className = 'stat-tile';
+    const l = document.createElement('div'); l.className = 'stat-label'; l.textContent = s.label;
+    const v = document.createElement('div'); v.className = 'stat-value'; v.textContent = s.value;
+    if (s.id) v.id = s.id;
+    tile.append(l, v);
+    statRow.appendChild(tile);
+  });
+  const statClusterCount = document.getElementById('statClusterCount');
+  const statUnclusteredCount = document.getElementById('statUnclusteredCount');
+
+  // ---- legend (also acts as cluster visibility filter) — rebuilt on every recluster ----
+  const legend = document.getElementById('legend');
+
+  function addLegendChip(id, swatchColor, labelText, count) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'legend-chip';
+    chip.dataset.active = 'true';
+    chip.dataset.group = id;
+    const dot = document.createElement('span');
+    dot.className = 'legend-swatch';
+    dot.style.background = swatchColor;
+    const label = document.createElement('span');
+    label.textContent = labelText;
+    const countEl = document.createElement('b');
+    countEl.textContent = `(${count})`;
+    chip.append(dot, label, countEl);
+    chip.addEventListener('click', () => {
+      if (activeGroups.has(id)) { activeGroups.delete(id); chip.dataset.active = 'false'; }
+      else { activeGroups.add(id); chip.dataset.active = 'true'; }
+      applyFilters();
+    });
+    legend.appendChild(chip);
+  }
+
+  function renderLegend() {
+    legend.innerHTML = '';
+    activeGroups = new Set(clusters.map(c => c.id));
+    activeGroups.add(UNCLUSTERED);
+    clusters.forEach(c => {
+      addLegendChip(c.id, colorForCluster(c.id), `Grupp ${c.id + 1} · mest ${c.dominant_series} `, c.size);
+    });
+    const unclusteredCount = nodes.filter(n => n.clusters.length === 0).length;
+    addLegendChip(UNCLUSTERED, unclusteredColor, 'Ingen tät grupp ', unclusteredCount);
+  }
+
+  // ---- roster table — rebuilt on every recluster ----
+  const rosterBody = document.querySelector('#rosterTable tbody');
+  function renderRoster() {
+    rosterBody.innerHTML = '';
+    [...nodes].sort((a, b) => b.games - a.games).forEach(n => {
+      const tr = document.createElement('tr');
+      const tdName = document.createElement('td'); tdName.textContent = n.id;
+      const tdGroup = document.createElement('td');
+      tdGroup.textContent = n.clusters.length
+        ? n.clusters.map(c => `Grupp ${c + 1}`).join(', ')
+        : '–';
+      const tdSeries = document.createElement('td'); tdSeries.textContent = n.dominant_series || '–';
+      const tdGames = document.createElement('td'); tdGames.className = 'num'; tdGames.textContent = n.games;
+      tr.append(tdName, tdGroup, tdSeries, tdGames);
+      rosterBody.appendChild(tr);
+    });
+  }
+
+  // ---- graph ----
+  const svg = d3.select('#graphSvg');
+  const W = 860, H = 600;
+  const zoomLayer = svg.append('g');
+  const linkLayer = zoomLayer.append('g').attr('class', 'links');
+  const nodeLayer = zoomLayer.append('g').attr('class', 'nodes');
+
+  svg.call(d3.zoom().scaleExtent([0.4, 3.5]).on('zoom', (event) => {
+    zoomLayer.attr('transform', event.transform);
+  }));
+
+  const radius = d3.scaleSqrt().domain([1, d3.max(nodes, d => d.games)]).range([6, 20]);
+  const strokeW = d3.scaleLinear().domain([1, maxWeight]).range([1, 5]);
+  const strokeOp = d3.scaleLinear().domain([1, maxWeight]).range([0.12, 0.65]);
+
+  // an edge is tinted with a shared cluster's color only when both
+  // endpoints are actually in that same cluster (nodes may belong to
+  // several, or none); otherwise it's a plain cross-cluster/unclustered edge
+  function sharedClusterColor(aId, bId) {
+    const a = nodeById.get(aId), b = nodeById.get(bId);
+    const shared = a.clusters.find(c => b.clusters.includes(c));
+    return shared === undefined ? null : colorForCluster(shared);
+  }
+
+  const simulation = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(linkData).id(d => d.id)
+      .distance(d => 150 - Math.min(d.weight, maxWeight) * 12)
+      .strength(d => Math.min(0.85, 0.1 + d.weight * 0.07)))
+    .force('charge', d3.forceManyBody().strength(-150))
+    .force('collide', d3.forceCollide().radius(d => radius(d.games) + 5))
+    .force('x', d3.forceX(d => primaryCluster(d) === null ? W / 2 : anchors[primaryCluster(d)].x)
+      .strength(d => primaryCluster(d) === null ? 0.05 : 0.10))
+    .force('y', d3.forceY(d => primaryCluster(d) === null ? H / 2 : anchors[primaryCluster(d)].y)
+      .strength(d => primaryCluster(d) === null ? 0.05 : 0.10))
+    .force('center', d3.forceCenter(W / 2, H / 2).strength(0.02));
+
+  const linkSel = linkLayer.selectAll('line')
+    .data(linkData)
+    .join('line')
+    .attr('class', 'edge')
+    .attr('stroke-width', d => strokeW(d.weight))
+    .attr('stroke-opacity', d => strokeOp(d.weight));
+    // stroke color depends on live cluster membership — set in recluster()
+
+  const nodeSel = nodeLayer.selectAll('g.node')
+    .data(nodes)
+    .join('g')
+    .attr('class', 'node')
+    .call(d3.drag()
+      .on('start', (event, d) => { if (!event.active) simulation.alphaTarget(0.25).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+      .on('end', (event, d) => { if (!event.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }));
+
+  nodeSel.append('circle')
+    .attr('class', 'core')
+    .attr('r', d => radius(d.games));
+    // fill depends on live cluster membership — set in recluster()
+
+  // an extra membership (bridge player, in more than one tight group) gets
+  // an outline ring per additional cluster, in that cluster's color —
+  // rings are (re)built entirely inside recluster(), not here, since
+  // membership count can only be known once clustering has run
+
+  // generous invisible hit area for pointer events (>= 24px)
+  nodeSel.append('circle')
+    .attr('class', 'hit')
+    .attr('r', d => Math.max(radius(d.games) + 6, 14))
+    .on('pointerenter', (event, d) => showTooltip(event, d))
+    .on('pointermove', (event) => moveTooltip(event))
+    .on('pointerleave', hideTooltip)
+    .on('click', (event, d) => { event.stopPropagation(); selectNode(d); });
+
+  // every player gets a name label (first name only, to keep the graph
+  // legible with all 38 players labeled at once); vertical offset is set
+  // in recluster() since it depends on how many rings a node has
+  function outerRadius(d) {
+    const ringSpan = d.clusters.length > 1 ? (d.clusters.length - 1) * 4 : 0;
+    return radius(d.games) + ringSpan;
+  }
+  nodeSel.append('text')
+    .attr('text-anchor', 'middle')
+    .text(d => d.id.split(' ')[0]);
+
+  simulation.on('tick', () => {
+    linkSel
+      .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    nodeSel.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+
+  svg.on('click', () => selectNode(null));
+
+  // ---- tooltip ----
+  const tooltip = document.getElementById('tooltip');
+  const frame = document.getElementById('graphFrame');
+  function showTooltip(event, d) {
+    tooltip.classList.add('visible');
+    tooltip.innerHTML = '';
+    const name = document.createElement('div'); name.className = 't-name'; name.textContent = d.id;
+    const games = document.createElement('div'); games.className = 't-games'; games.textContent = `${d.games} matcher spelade`;
+    tooltip.append(name, games);
+    moveTooltip(event);
+  }
+  function moveTooltip(event) {
+    const rect = frame.getBoundingClientRect();
+    tooltip.style.left = (event.clientX - rect.left) + 'px';
+    tooltip.style.top = (event.clientY - rect.top - 12) + 'px';
+  }
+  function hideTooltip() { tooltip.classList.remove('visible'); }
+
+  // ---- selection / focus mode ----
+  const panel = document.getElementById('panel');
+  let selectedId = null;
+
+  function neighborsOf(id) {
+    const weights = new Map();
+    linkData.forEach(l => {
+      const s = l.source.id || l.source, t = l.target.id || l.target;
+      if (s === id) weights.set(t, l.weight);
+      if (t === id) weights.set(s, l.weight);
+    });
+    return weights;
+  }
+
+  function selectNode(d) {
+    selectedId = d ? d.id : null;
+    if (!d) {
+      nodeSel.classed('dim', false);
+      linkSel.classed('dim', false);
+      renderDefaultPanel();
+      return;
+    }
+    const neigh = neighborsOf(d.id);
+    nodeSel.classed('dim', n => n.id !== d.id && !neigh.has(n.id));
+    linkSel.classed('dim', l => {
+      const s = l.source.id || l.source, t = l.target.id || l.target;
+      return s !== d.id && t !== d.id;
+    });
+    renderPlayerPanel(d, neigh);
+  }
+
+  function renderDefaultPanel() {
+    panel.innerHTML = '';
+    const h = document.createElement('h2'); h.textContent = 'Utforska';
+    const p = document.createElement('p'); p.className = 'muted';
+    p.textContent = 'Klicka på en spelare för att se vilka hen oftast spelar med. Dra i punkterna eller scrolla för att zooma.';
+    panel.append(h, p);
+  }
+
+  function renderPlayerPanel(d, neigh) {
+    panel.innerHTML = '';
+    const h = document.createElement('h2'); h.textContent = d.id;
+    panel.appendChild(h);
+
+    const tagWrap = document.createElement('div'); tagWrap.className = 'group-tags';
+    if (d.clusters.length) {
+      d.clusters.forEach(clusterId => {
+        const c = clusters[clusterId];
+        const tag = document.createElement('div'); tag.className = 'group-tag';
+        const dot = document.createElement('span'); dot.className = 'group-dot';
+        dot.style.background = colorForCluster(clusterId);
+        tag.append(dot, document.createTextNode(`Grupp ${clusterId + 1} · mest ${c.dominant_series} (${c.size})`));
+        tagWrap.appendChild(tag);
+      });
+    } else {
+      const tag = document.createElement('div'); tag.className = 'group-tag';
+      const dot = document.createElement('span'); dot.className = 'group-dot';
+      dot.style.background = unclusteredColor;
+      tag.append(dot, document.createTextNode('Ej i någon tät grupp'));
+      tagWrap.appendChild(tag);
+    }
+    const gamesLine = document.createElement('div'); gamesLine.className = 'muted';
+    gamesLine.textContent = `${d.games} matcher`;
+    panel.append(tagWrap, gamesLine);
+
+    const seriesWrap = document.createElement('div'); seriesWrap.className = 'series-bars';
+    const maxSeries = Math.max(...Object.values(d.series));
+    Object.entries(d.series).sort((a,b) => b[1]-a[1]).forEach(([s, c]) => {
+      const row = document.createElement('div'); row.className = 'series-bar-row';
+      const label = document.createElement('span'); label.className = 's-label'; label.textContent = s;
+      const track = document.createElement('div'); track.className = 'series-bar-track';
+      const fill = document.createElement('div'); fill.className = 'series-bar-fill';
+      fill.style.width = Math.round((c / maxSeries) * 100) + '%';
+      track.appendChild(fill);
+      const count = document.createElement('span'); count.className = 's-count'; count.textContent = c;
+      row.append(label, track, count);
+      seriesWrap.appendChild(row);
+    });
+    panel.appendChild(seriesWrap);
+
+    const listLabel = document.createElement('div'); listLabel.className = 'stat-label'; listLabel.style.marginTop = '4px';
+    listLabel.textContent = 'Spelar oftast med';
+    panel.appendChild(listLabel);
+
+    const list = document.createElement('div'); list.className = 'copair-list';
+    [...neigh.entries()].sort((a,b) => b[1]-a[1]).slice(0, 8).forEach(([name, w]) => {
+      const row = document.createElement('div'); row.className = 'copair-row';
+      const n = document.createElement('span'); n.textContent = name;
+      const c = document.createElement('span'); c.className = 'c-weight'; c.textContent = `${w} ggr`;
+      row.append(n, c);
+      list.appendChild(row);
+    });
+    panel.appendChild(list);
+  }
+
+  renderDefaultPanel();
+
+  // ---- live clustering: k-clique percolation (CPM) on the graph of edges
+  // whose weight (matches played together) clears the "minst antal matcher
+  // ihop" slider value. A 1:1 port of the algorithm this page used to run
+  // once in Python, now recomputed on every slider move so both the
+  // clustering threshold and the edge-visibility threshold are the same
+  // number the reader is looking at. ----
+
+  function computeClusters(minWeight) {
+    const adjacency = new Map();
+    nodes.forEach(n => adjacency.set(n.id, new Set()));
+    edges.forEach(e => {
+      if (e.weight >= minWeight) {
+        adjacency.get(e.source).add(e.target);
+        adjacency.get(e.target).add(e.source);
+      }
+    });
+
+    const maximalCliques = [];
+    function bronKerbosch(R, P, X) {
+      if (P.size === 0 && X.size === 0) {
+        if (R.size >= CLIQUE_K) maximalCliques.push(new Set(R));
+        return;
+      }
+      const PX = new Set([...P, ...X]);
+      let pivot = null, best = -1;
+      for (const u of PX) {
+        const n = [...P].filter(v => adjacency.get(u).has(v)).length;
+        if (n > best) { best = n; pivot = u; }
+      }
+      for (const v of [...P].filter(v => !adjacency.get(pivot).has(v))) {
+        bronKerbosch(new Set([...R, v]),
+                     new Set([...P].filter(x => adjacency.get(v).has(x))),
+                     new Set([...X].filter(x => adjacency.get(v).has(x))));
+        P.delete(v);
+        X.add(v);
+      }
+    }
+    bronKerbosch(new Set(), new Set(nodes.map(n => n.id)), new Set());
+
+    // percolate: union cliques that share at least CLIQUE_K - 1 members
+    const parent = maximalCliques.map((_, i) => i);
+    function find(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+    function union(i, j) { const ri = find(i), rj = find(j); if (ri !== rj) parent[ri] = rj; }
+    for (let i = 0; i < maximalCliques.length; i++) {
+      for (let j = i + 1; j < maximalCliques.length; j++) {
+        const shared = [...maximalCliques[i]].filter(v => maximalCliques[j].has(v)).length;
+        if (shared >= CLIQUE_K - 1) union(i, j);
+      }
+    }
+    const percolated = new Map();
+    maximalCliques.forEach((clique, i) => {
+      const r = find(i);
+      if (!percolated.has(r)) percolated.set(r, new Set());
+      clique.forEach(v => percolated.get(r).add(v));
+    });
+
+    // rank: size desc, tie-break total games desc, so id 0 = largest
+    const memberLists = [...percolated.values()].map(set => [...set].sort());
+    memberLists.sort((a, b) => {
+      const sizeDiff = b.length - a.length;
+      if (sizeDiff !== 0) return sizeDiff;
+      const gamesOf = list => list.reduce((sum, p) => sum + nodeById.get(p).games, 0);
+      return gamesOf(b) - gamesOf(a);
+    });
+
+    const newClusters = memberLists.map((members, id) => {
+      const domCount = new Map();
+      members.forEach(p => {
+        const d = nodeById.get(p).dominant_series;
+        if (d) domCount.set(d, (domCount.get(d) || 0) + 1);
+      });
+      let topSeries = '?', topCount = -1;
+      for (const [s, c] of domCount) if (c > topCount) { topSeries = s; topCount = c; }
+      return { id, size: members.length, members, dominant_series: topSeries };
+    });
+
+    const membershipByNode = new Map(nodes.map(n => [n.id, []]));
+    newClusters.forEach(c => c.members.forEach(p => membershipByNode.get(p).push(c.id)));
+
+    return { clusters: newClusters, membershipByNode };
+  }
+
+  function recluster(minWeight) {
+    const { clusters: newClusters, membershipByNode } = computeClusters(minWeight);
+    nodes.forEach(n => { n.clusters = membershipByNode.get(n.id); });
+    clusters = newClusters;
+
+    const angleStep = (2 * Math.PI) / Math.max(clusters.length, 1);
+    const anchorR = Math.min(W, H) * 0.30;
+    anchors = clusters.map((c, i) => ({
+      x: W / 2 + Math.cos(i * angleStep - Math.PI / 2) * anchorR,
+      y: H / 2 + Math.sin(i * angleStep - Math.PI / 2) * anchorR,
+    }));
+
+    renderLegend();
+    renderRoster();
+    statClusterCount.textContent = clusters.length;
+    statUnclusteredCount.textContent = nodes.filter(n => n.clusters.length === 0).length;
+
+    nodeSel.select('circle.core')
+      .attr('fill', d => d.clusters.length ? colorForCluster(d.clusters[0]) : unclusteredColor);
+
+    nodeSel.selectAll('circle.ring').remove();
+    nodeSel.each(function(d) {
+      d.clusters.slice(1).forEach((clusterId, i) => {
+        d3.select(this).insert('circle', '.hit')
+          .attr('class', 'ring')
+          .attr('r', radius(d.games) + 4 + i * 4)
+          .style('fill', 'none')
+          .style('stroke', colorForCluster(clusterId))
+          .style('stroke-width', '1.5px');
+      });
+    });
+
+    nodeSel.select('text').attr('dy', d => -(outerRadius(d) + 6));
+
+    linkSel.attr('stroke', d => sharedClusterColor(d.source.id || d.source, d.target.id || d.target) || edgeNeutral);
+
+    selectNode(null);
+    simulation.alpha(0.5).restart();
+    applyFilters();
+  }
+
+  // ---- filters: search + min weight + legend group toggles ----
+  const searchInput = document.getElementById('searchInput');
+  const minWeightInput = document.getElementById('minWeight');
+  const minWeightValue = document.getElementById('minWeightValue');
+  const resetBtn = document.getElementById('resetBtn');
+
+  function applyFilters() {
+    const q = searchInput.value.trim().toLowerCase();
+    const minW = +minWeightInput.value;
+    minWeightValue.textContent = minW;
+
+    function isVisible(d) {
+      return d.clusters.length ? d.clusters.some(c => activeGroups.has(c)) : activeGroups.has(UNCLUSTERED);
+    }
+
+    nodeSel.style('display', d => isVisible(d) ? null : 'none');
+    nodeSel.classed('dim', d => q.length > 0 && !d.id.toLowerCase().includes(q));
+
+    linkSel.style('display', l => {
+      const sOk = isVisible(l.source), tOk = isVisible(l.target);
+      return (sOk && tOk && l.weight >= minW) ? null : 'none';
+    });
+  }
+
+  searchInput.addEventListener('input', applyFilters);
+
+  let reclusterQueued = false;
+  minWeightInput.addEventListener('input', () => {
+    if (reclusterQueued) return;
+    reclusterQueued = true;
+    requestAnimationFrame(() => {
+      reclusterQueued = false;
+      recluster(+minWeightInput.value);
+    });
+  });
+
+  resetBtn.addEventListener('click', () => {
+    searchInput.value = '';
+    minWeightInput.value = 2;
+    recluster(2);
+  });
+
+  recluster(+minWeightInput.value);
+})();
+</script>

@@ -11,6 +11,10 @@ import io
 import textwrap
 import html
 import argparse
+import collections
+import itertools
+import json
+import os
 
 
 class ReportState():
@@ -168,6 +172,7 @@ class SportadminGamesAnalyzer:
         self.available_distribution()
         self.played_distribution()
         self.played_multiples()
+        self.play_network()
 
 
     def played_multiples(self):
@@ -179,6 +184,74 @@ class SportadminGamesAnalyzer:
                        (matcher i andra åldersgrupper ej inräknade))
                        """,
                        "played_multiples.html")
+
+
+    # minimum clique size for the client-side k-clique percolation
+    # clustering in play_network_template.html (kept here as the single
+    # source of truth, emitted into network_data as "clique_k")
+    CLIQUE_K = 3
+
+    def play_network(self):
+        """Build a co-occurrence graph of which players actually played
+        matches together and render it as an interactive force-directed
+        graph (play_network.html). Clustering itself runs client-side,
+        live, driven by the "minst antal matcher ihop" slider - see
+        computeClusters()/recluster() in play_network_template.html."""
+
+        played = self.df[self.df['ReportState'] == ReportState.CALLED_COMING]
+
+        games_played = played.groupby('player name').size().to_dict()
+
+        series_breakdown = collections.defaultdict(collections.Counter)
+        for (player, series), count in played.groupby(['player name', 'series']).size().items():
+            series_breakdown[player][series] = int(count)
+
+        co_play = collections.Counter()
+        for _, roster in played.groupby('match number')['player name']:
+            names = sorted(set(roster))
+            for a, b in itertools.combinations(names, 2):
+                co_play[(a, b)] += 1
+
+        node_ids = sorted(games_played.keys())
+        edge_list = [(a, b, w) for (a, b), w in co_play.items()]
+
+        nodes = []
+        for player in node_ids:
+            breakdown = series_breakdown[player]
+            dominant = breakdown.most_common(1)[0][0] if breakdown else None
+            nodes.append({
+                "id": player,
+                "games": games_played[player],
+                "series": dict(breakdown),
+                "dominant_series": dominant,
+            })
+
+        edges = [{"source": a, "target": b, "weight": w} for a, b, w in edge_list]
+
+        network_data = {
+            "season": self.season,
+            "year": self.year,
+            "matches": int(played['match number'].nunique()),
+            "series_list": sorted(played['series'].unique().tolist()),
+            "clique_k": self.CLIQUE_K,
+            "nodes": nodes,
+            "edges": edges,
+        }
+
+        self._write_play_network_html(network_data, "play_network.html")
+
+
+    def _write_play_network_html(self, network_data, filename):
+        template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "play_network_template.html")
+        with open(template_path, encoding="utf-8") as f:
+            template = f.read()
+
+        # guard against a "</script" substring in the data breaking out of
+        # the inline <script> tag it gets embedded in
+        json_str = json.dumps(network_data, ensure_ascii=False).replace("</", "<\\/")
+
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(template.replace("__NETWORK_DATA_JSON__", json_str))
 
 
     def played_distribution(self):
