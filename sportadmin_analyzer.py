@@ -207,7 +207,8 @@ class SportadminGamesAnalyzer:
                           (förhandsrapporterad som "tillgänglig" eller faktiskt spelat).
                           Varje streck är en match.
                           """,
-                          "available_distribution.html")
+                          "available_distribution.html",
+                          sort_by_total=True)
 
 
     def multiples(self, df, states, description, html_filename):
@@ -239,7 +240,7 @@ class SportadminGamesAnalyzer:
         self.pretty_print(sorted_df, False, description, html_filename)
 
 
-    def distribution_by_series(self, df, states, description, html_filename):
+    def distribution_by_series(self, df, states, description, html_filename, sort_by_total=False):
 
         filtered_df = df[df['ReportState'].isin(states)]
 
@@ -260,9 +261,17 @@ class SportadminGamesAnalyzer:
         # First, get a list of the series columns
         series_columns = list(pivot_df.columns)
 
-        # Sort by series in descending order, and then player name in ascending order
-        column_df = pivot_df.sort_values(by=series_columns + ['player name'],
-                                 ascending=[False] * len(series_columns) + [True])
+        if sort_by_total:
+            # Sort by the sum across all series (descending), then player name ascending
+            column_df = pivot_df.copy()
+            column_df['total'] = column_df[series_columns].sum(axis=1)
+            column_df = column_df.reset_index().sort_values(by=['total', 'player name'],
+                                     ascending=[False, True]).set_index('player name')
+            column_df = column_df[series_columns]
+        else:
+            # Sort by series in descending order, and then player name in ascending order
+            column_df = pivot_df.sort_values(by=series_columns + ['player name'],
+                                     ascending=[False] * len(series_columns) + [True])
         #print(column_df)
 
         # Define a function to convert integer values to ASCII bars
