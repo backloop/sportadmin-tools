@@ -198,11 +198,10 @@ class SportadminGamesAnalyzer:
     def available_distribution(self):
         self.distribution_by_series(self.df,
                           (ReportState.PRE_REPORT_AVAILABLE,
-                          ReportState.CALLED_COMING,
-                          ReportState.CALLED_NOT_COMING),
+                          ReportState.CALLED_COMING),
                           """
-                          Fördelning av anmäld tillgänglighet
-                          (förhandsrapporterad som "tillgänglig", eller faktiskt spelat).
+                          Fördelning av tillgänglighet
+                          (förhandsrapporterad som "tillgänglig" eller faktiskt spelat).
                           Varje streck är en match.
                           """,
                           "available_distribution.html")
