@@ -33,6 +33,9 @@ class SportadminGamesAnalyzer:
             # !show_index - Print the DataFrame without the row index
             print(df.to_string(index=show_index), file=df_io)
             df_string = df_io.getvalue()
+            # to_string() right-pads columns to a fixed width, which leaves
+            # trailing whitespace on rows whose last cell is short/empty
+            df_string = "\n".join(line.rstrip() for line in df_string.splitlines())
             max_width = max(len(line) for line in df_string.splitlines())
 
         # dedent and then remove any leading newlines
