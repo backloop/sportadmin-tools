@@ -426,7 +426,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze player data exported from SportAdmin")
 
     # Add arguments
-    parser.add_argument('-o', '--obfuscate', action="store_true", help="Obsfuscate the player names in the output graphs")
+    parser.add_argument('-o', '--obfuscate', action="store_true", help="Obfuscate the player names in the output graphs")
     parser.add_argument('-i', '--input', help="The raw input data", type=str, default="sportadmin.csv")
 
     # Parse the arguments

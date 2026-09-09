@@ -63,17 +63,36 @@ anything suspect is flagged in the jsonl (`grep '"result": "warn"'`).
 determinism and an optional `--baseline` diff:
 
     ./run_verify.sh sportadmin_vt25.csv        # 5 runs + checks vs a baseline
+    ./run_10x.sh sportadmin_vt25.csv           # 10 runs (thin wrapper around run_verify.sh)
     pipenv run python verify_scrape.py --csv sportadmin.csv --season vår
 
-Note: re-scraping a past season, the `Ej kallad` tab reflects *current* club
+Note: when re-scraping a past season, the `Ej kallad` tab reflects *current* club
 membership — players who have since left will be absent (and the tab labels
 exclude them too), so an old baseline can legitimately differ by those names.
 
 ### sportadmin_analyzer.py
-Reads `sportadmin.csv` and presents player statistics:
-* Total reported availablility?
-* How many times did each player play in each team?
-* Which weekends did players play multiple games?
+Reads `sportadmin.csv` and prints player statistics to the console:
+* Total reported availability, pre-reported or actually played.
+* How many times each player played in each series.
+* Which weekends players played multiple games.
+
+    pipenv run python3 sportadmin_analyzer.py -i sportadmin.csv
+
+Prompts interactively for the season (`vår`/`höst`) on every run. Flags:
+`-i`/`--input PATH` (raw scraped CSV, default `sportadmin.csv`) and
+`-o`/`--obfuscate` (replace player names with `Player_NN` everywhere, as
+in the samples below).
+
+It also writes `play_network.html`: an interactive force-directed graph of
+which players actually played matches together, clustered live in the
+browser — a k-clique-percolation algorithm re-runs as you drag the "Minst
+antal matcher ihop" (minimum matches together) slider, so tightening or
+loosening the threshold regroups and recolors players on the fly (a player
+can end up in zero, one, or several groups). The same page opens with
+three season-overview tables — reported availability, matches played per
+series, and double-booked weeks — the same data as the three console
+reports above, rendered as bar tables. Open the file directly in a
+browser; it needs no server.
 
 ## Output samples
 ```
