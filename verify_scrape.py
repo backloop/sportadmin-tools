@@ -7,7 +7,7 @@ check fails. No Playwright, no network.
 
     verify_scrape.py --csv sportadmin.csv \
         [--runs sportadmin.run1.csv sportadmin.run2.csv ...] \
-        [--baseline sportadmin_vt25.csv] [--season vår|höst]
+        [--baseline sportadmin_vt25.csv] [--season vår|höst|vinter]
 """
 
 import argparse
@@ -133,7 +133,7 @@ def main():
     ap.add_argument("--csv", required=True)
     ap.add_argument("--runs", nargs="*", default=[])
     ap.add_argument("--baseline")
-    ap.add_argument("--season", choices=["vår", "höst"])
+    ap.add_argument("--season", choices=["vår", "höst", "vinter"])
     args = ap.parse_args()
 
     rows = season_filter(load(args.csv), args.season)

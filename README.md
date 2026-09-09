@@ -78,7 +78,7 @@ Reads `sportadmin.csv` and prints player statistics to the console:
 
     pipenv run python3 sportadmin_analyzer.py -i sportadmin.csv
 
-Prompts interactively for the season (`vår`/`höst`) on every run. Flags:
+Prompts interactively for the season (`vår`/`höst`/`vinter`) on every run. Flags:
 `-i`/`--input PATH` (raw scraped CSV, default `sportadmin.csv`) and
 `-o`/`--obfuscate` (replace player names with `Player_NN` everywhere, as
 in the samples below).
