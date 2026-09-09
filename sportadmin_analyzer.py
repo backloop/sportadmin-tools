@@ -82,8 +82,11 @@ class SportadminGamesAnalyzer:
                 # convert to date
                 date = datetime.datetime.strptime(row[0], "%Y-%m-%d")
 
-                # extract the series differentiator
-                series = re.sub(r"[PF][0-9]{2} [A-Ö-a-ö]+ ([A-D][1-5]?), (vår|höst|vinter)", r"\g<1>", row[2])
+                # extract the series differentiator. The district name is
+                # sometimes prefixed with a birth-year infix, e.g.
+                # "P12 (f.2014) Sydvästra A1, vinter" instead of the plain
+                # "P12 Nordvästra A, vår" - the infix is optional.
+                series = re.sub(r"[PF][0-9]{2} (?:\(f\.[0-9]{4}\) )?[A-Ö-a-ö]+ ([A-D][1-5]?), (vår|höst|vinter)", r"\g<1>", row[2])
 
                 # remove trailing comment with syntax "<first name> [middle name] <last name> - <comment>"
                 row[3] = re.sub(r"(.*) - .*", r"\g<1>", row[3])
