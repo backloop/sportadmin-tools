@@ -4,10 +4,7 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-selenium = "*"
-selenium-chromedriver = "*"
 pandas = "*"
-numpy = "*"
 playwright = "*"
 
 [dev-packages]
