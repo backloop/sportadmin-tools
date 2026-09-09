@@ -296,7 +296,7 @@ class SportadminGamesScraper:
             frame, rows = self.wait_for_matches_iframe_to_complete()
 
         # have we parsed all matches in the selected series
-        if self.row_idx >= (self.row_count-1):
+        if self.row_idx >= self.row_count:
             #print("switch serie")
             self.series_idx += 1
             self.row_idx = 0
