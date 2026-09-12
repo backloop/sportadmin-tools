@@ -429,19 +429,25 @@ class SportadminGamesAnalyzer:
         # Merge "week number" and "series name" into a unique identifier
         filtered_df['week_series'] = filtered_df['week'].astype(str) + '_' + filtered_df['series']
 
-        # Check for duplicates
+        # A player can have more than one match in the same series in the
+        # same calendar week (e.g. a rescheduled match) - plain pivot() can't
+        # put two values in one cell and crashes ("duplicate entries, cannot
+        # reshape"). Report it, then combine them with ',' instead of losing
+        # the extra match.
         duplicates = filtered_df.duplicated(subset=['player name', 'week_series'])
-        print("Duplicates found:", duplicates.any())
+        if duplicates.any():
+            for _, dup_row in filtered_df.loc[duplicates, ['player name', 'week_series']].drop_duplicates().iterrows():
+                print(f"Multiple matches in same week: {dup_row['player name']} / {dup_row['week_series']}")
 
         # Define a function to set the 'entry' value based on 'series'
         # Apply the function to create the 'entry' column
         filtered_df['entry'] = filtered_df['series'].apply(lambda x: x)
 
-        # Pivot the DataFrame with "player name" as rows, "week_series" as columns, and 1 for entries
-        pivot_df = filtered_df.pivot(index='player name', columns='week_series', values='entry')
-
-        # Fill missing values (indicating no entry) with 0
-        pivot_df = pivot_df.fillna('')
+        # Pivot the DataFrame with "player name" as rows, "week_series" as columns;
+        # join multiple entries in the same cell with ',' instead of crashing.
+        # Missing combinations (no match that week) are filled with ''.
+        pivot_df = filtered_df.pivot_table(index='player name', columns='week_series', values='entry',
+                                            aggfunc=lambda vals: ','.join(vals), fill_value='')
 
         self.pretty_print(pivot_df, True, description)
 
