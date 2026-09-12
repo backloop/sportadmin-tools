@@ -27,7 +27,7 @@ Headful under Xvfb via `./run.sh`. Set `HEADLESS=1` to run headless.
 ## Tools
 ### sportadmin_scraper.py
 Scrapes every match in the matching series/period and writes
-`date,matchid,series,player_name,state` rows to `sportadmin.csv`
+`date,matchid,series,player_name,state,location` rows to `sportadmin.csv`
 (delimiter `,`, quotechar `|`). One row per club member per match, taken from
 the four attendance tabs (`Kommer`, `Kommer ej`, `Ej svarat`, `Ej kallad`).
 

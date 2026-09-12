@@ -76,6 +76,11 @@ class SportadminGamesAnalyzer:
                 #cols[int(row[-1])-1] = 1
                 #row.extend(cols)
 
+                # older CSVs (scraped before "location" was added) have only
+                # 5 fields; pad so the column count always matches header
+                if len(row) < 6:
+                    row.append("")
+
                 # create week number
                 week_num = datetime.date.fromisoformat(row[0]).isocalendar()[1]
 
@@ -104,7 +109,7 @@ class SportadminGamesAnalyzer:
                 data.append(row)
 
             #header = ["date", "match number", "series name", "player name", "ReportState", "available", "not available", "not reported", "coming", "not coming", "not answered"]
-            header = ["date", "match number", "series name", "player name", "report state"]
+            header = ["date", "match number", "series name", "player name", "report state", "location"]
             header.insert(0, "date")
             header.insert(1, "week")
             header.insert(2, "ReportState")

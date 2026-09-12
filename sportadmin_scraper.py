@@ -627,12 +627,15 @@ class SportadminGamesScraper:
         """Open one match from the list and harvest all four attendance tabs.
 
         Returns (rows, "") where rows is a list of
-        [date, matchid, series, name, state] (empty list for a skipped/cancelled
-        match, None for a non-match row).
+        [date, matchid, series, name, state, location] (empty list for a
+        skipped/cancelled match, None for a non-match row).
         """
         cells = row.locator("td")
         if cells.count() != 9:
             return (None, "")
+
+        # column layout: DATUM, TID, MATCHID, LAG, PLATS, RESULTAT, ...
+        location = cells.nth(5).inner_text().strip()
 
         matchid_txt = cells.nth(3).inner_text().strip()
         if not matchid_txt.isdigit():
@@ -743,7 +746,7 @@ class SportadminGamesScraper:
             }
             for mem in t["members"]:
                 match_rows.append([date.date().isoformat(), matchid,
-                                   self.series_name, mem["name"], mem["state"]])
+                                   self.series_name, mem["name"], mem["state"], location])
 
         parsed = {lbl: record["tabs"][lbl]["parsed_members"] for lbl, _ in self.TABS}
         labels = {lbl: record["tabs"][lbl]["label_N"] for lbl, _ in self.TABS}

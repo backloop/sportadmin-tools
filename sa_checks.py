@@ -185,21 +185,23 @@ def match_flags(record):
 
 
 def row_majority(runs):
-    """Merge N runs (each a list of [date, matchid, series, name, state]).
+    """Merge N runs (each a list of [date, matchid, series, name, state,
+    location] - location is optional, defaults to "" for older 5-field rows).
 
     Returns (merged_rows, nondeterministic) where nondeterministic is a list of
     dicts describing every (matchid, name) key whose (state) or presence is not
     unanimous across all runs.
     """
     n = len(runs)
-    # key -> list of (date, series, state) per run it appeared in
+    # key -> list of (date, series, state, location) per run it appeared in
     seen = {}
     for run in runs:
         run_keys = {}
         for row in run:
             date, matchid, series, name, state = row[0], row[1], row[2], row[3], row[4]
+            location = row[5] if len(row) > 5 else ""
             key = (str(matchid), name)
-            run_keys.setdefault(key, []).append((date, series, state))
+            run_keys.setdefault(key, []).append((date, series, state, location))
         for key, vals in run_keys.items():
             seen.setdefault(key, []).append(vals)
 
@@ -212,8 +214,8 @@ def row_majority(runs):
         from collections import Counter
         cnt = Counter(states)
         top_state, top_n = cnt.most_common(1)[0]
-        # representative date/series (first seen)
-        date0, series0, _ = per_run[0][0]
+        # representative date/series/location (first seen)
+        date0, series0, _, location0 = per_run[0][0]
         unanimous = present == n and len(cnt) == 1 and all(len(v) == 1 for v in per_run)
         if not unanimous:
             nondeterministic.append({
@@ -222,5 +224,5 @@ def row_majority(runs):
                 "states": dict(cnt),
             })
         merged.append([date0, int(key[0]) if key[0].isdigit() else key[0],
-                       series0, key[1], top_state])
+                       series0, key[1], top_state, location0])
     return merged, nondeterministic

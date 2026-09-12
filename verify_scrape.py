@@ -21,13 +21,14 @@ DIALECT = dict(delimiter=",", quotechar="|", quoting=csv.QUOTE_MINIMAL)
 
 
 def load(path):
-    """Return list of [date, matchid, series, name, state]."""
+    """Return list of [date, matchid, series, name, state, location].
+    location defaults to "" for older 5-field rows."""
     rows = []
     with open(path, newline="") as f:
         for r in csv.reader(f, **DIALECT):
             if len(r) < 5:
                 continue
-            rows.append([r[0], r[1], r[2], r[3], r[4]])
+            rows.append([r[0], r[1], r[2], r[3], r[4], r[5] if len(r) > 5 else ""])
     return rows
 
 
