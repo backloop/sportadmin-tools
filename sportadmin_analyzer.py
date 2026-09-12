@@ -62,6 +62,12 @@ class SportadminGamesAnalyzer:
         # Read all data and add some calculated columns
         #
 
+        # --home-locations gives one or more regex fragments; a match's
+        # location counts as "home" if it matches any of them, else "away".
+        # With no patterns given, every match is classified "away".
+        home_locations = getattr(self.args, "home_locations", None) or []
+        home_pattern = re.compile("|".join(home_locations)) if home_locations else None
+
         with open(filename, newline='') as csvfile:
 
             data = []
@@ -100,12 +106,16 @@ class SportadminGamesAnalyzer:
                 #report_state = ReportState(int(row[4]))
                 report_state  = row[4]
 
+                # home vs away, based on --home-locations against the venue
+                home_away = "home" if home_pattern and home_pattern.search(row[5]) else "away"
+
                 header = []
                 # add new columns
                 row.insert(0, date)
                 row.insert(1, week_num)
                 row.insert(2, report_state)
                 row.insert(3, series)
+                row.insert(4, home_away)
                 data.append(row)
 
             #header = ["date", "match number", "series name", "player name", "ReportState", "available", "not available", "not reported", "coming", "not coming", "not answered"]
@@ -114,16 +124,17 @@ class SportadminGamesAnalyzer:
             header.insert(1, "week")
             header.insert(2, "ReportState")
             header.insert(3, "series")
+            header.insert(4, "home_away")
 
         # filter on season
         self.season = input("Which season [vår, höst, vinter]? ")
         if not self.season in ("vår", "höst", "vinter"):
             print("ERROR: Incorrect season")
             exit(1)
-        data = filter(lambda row: self.season in row[6], data)
+        data = filter(lambda row: self.season in row[7], data)
 
         # filter out external players, where player names start with "- <first name> <last name>"
-        #data = filter(lambda row: row[7][:2] != "- ", data)
+        #data = filter(lambda row: row[8][:2] != "- ", data)
 
         # expand the filter, otherwise after a single walkthrough the iterator is exhausted
         data = list(data)
@@ -255,22 +266,32 @@ class SportadminGamesAnalyzer:
         """Player x series match-count table for the given ReportState set,
         JSON-friendly equivalent of distribution_by_series()'s ASCII bar
         chart (same grouping/sort semantics, plain data instead of bars).
-        Only players with at least one qualifying match appear."""
+        Only players with at least one qualifying match appear. Each cell
+        is split into home/away counts (see --home-locations) so the page
+        can render them in two colors."""
 
         filtered_df = self.df[self.df['ReportState'].isin(states)]
-        counts = collections.defaultdict(collections.Counter)
-        for (player, series), count in filtered_df.groupby(['player name', 'series']).size().items():
-            counts[player][series] = int(count)
+        counts = collections.defaultdict(lambda: collections.defaultdict(lambda: {"home": 0, "away": 0}))
+        for (player, series, home_away), count in filtered_df.groupby(['player name', 'series', 'home_away']).size().items():
+            counts[player][series][home_away] = int(count)
 
         series_columns = sorted({s for c in counts.values() for s in c})
         players = list(counts.keys())
 
-        if sort_by_total:
-            players.sort(key=lambda p: (-sum(counts[p].values()), p))
-        else:
-            players.sort(key=lambda p: tuple(-counts[p].get(s, 0) for s in series_columns) + (p,))
+        def cell_total(p, s):
+            c = counts[p].get(s, {})
+            return c.get("home", 0) + c.get("away", 0)
 
-        rows = [{"player": p, "counts": {s: counts[p].get(s, 0) for s in series_columns}} for p in players]
+        if sort_by_total:
+            players.sort(key=lambda p: (-sum(cell_total(p, s) for s in series_columns), p))
+        else:
+            players.sort(key=lambda p: tuple(-cell_total(p, s) for s in series_columns) + (p,))
+
+        rows = [{"player": p,
+                 "counts": {s: {"home": counts[p].get(s, {}).get("home", 0),
+                                "away": counts[p].get(s, {}).get("away", 0)}
+                            for s in series_columns}}
+                for p in players]
         return {"series_columns": series_columns, "rows": rows}
 
 
@@ -354,50 +375,47 @@ class SportadminGamesAnalyzer:
 
         filtered_df = df[df['ReportState'].isin(states)]
 
-        # Group by "series" and "player name", then count the occurrences
-        grouped_df = filtered_df.groupby(["series", "player name"]).size().reset_index(name='count')
+        # Group by "series", "player name" and home/away, then count the occurrences
+        grouped_df = filtered_df.groupby(["series", "player name", "home_away"]).size().reset_index(name='count')
 
-        # Sort by "series" first and then by "count" within each "series" in descending order
-        sorted_df = grouped_df.sort_values(by=["series", "count", "player name"], ascending=[True, False, True])
-        #print(sorted_df)
+        # Pivot home and away matches into separate tables so each cell's
+        # bar can show both counts, then align them onto the same
+        # (player, series) grid via a union of both pivots' index/columns.
+        home_pivot = grouped_df[grouped_df['home_away'] == 'home'] \
+            .pivot(index="player name", columns="series", values="count")
+        away_pivot = grouped_df[grouped_df['home_away'] == 'away'] \
+            .pivot(index="player name", columns="series", values="count")
 
-        # Pivot the data so that "series" becomes columns, and "player name" remains as the index
-        pivot_df = grouped_df.pivot(index="player name", columns="series", values="count")
+        all_players = sorted(set(home_pivot.index) | set(away_pivot.index))
+        all_series = sorted(set(home_pivot.columns) | set(away_pivot.columns))
+        home_pivot = home_pivot.reindex(index=all_players, columns=all_series, fill_value=0).fillna(0)
+        away_pivot = away_pivot.reindex(index=all_players, columns=all_series, fill_value=0).fillna(0)
 
-        # Optionally, fill missing values (if any player doesn't have data in some series) with 0
-        pivot_df = pivot_df.fillna(0)
-        #print(pivot_df)
-
-        # First, get a list of the series columns
-        series_columns = list(pivot_df.columns)
+        series_columns = list(home_pivot.columns)
+        total_pivot = home_pivot + away_pivot
 
         if sort_by_total:
             # Sort by the sum across all series (descending), then player name ascending
-            column_df = pivot_df.copy()
-            column_df['total'] = column_df[series_columns].sum(axis=1)
-            column_df = column_df.reset_index().sort_values(by=['total', 'player name'],
-                                     ascending=[False, True]).set_index('player name')
-            column_df = column_df[series_columns]
+            order = total_pivot.sum(axis=1).reset_index(name='total') \
+                .sort_values(by=['total', 'player name'], ascending=[False, True])
         else:
             # Sort by series in descending order, and then player name in ascending order
-            column_df = pivot_df.sort_values(by=series_columns + ['player name'],
+            order = total_pivot.reset_index().sort_values(by=series_columns + ['player name'],
                                      ascending=[False] * len(series_columns) + [True])
-        #print(column_df)
+        sorted_players = order['player name'].tolist()
 
-        # Define a function to convert integer values to ASCII bars
-        def ascii_bar(value, max_value=10, bar_char='|'):
-            # Scale the bar length relative to the maximum value, adjust as needed
-            #bar_length = int((value / column_df[series_columns].values.max()) * max_value)
-            bar_length = int(value)
-            return bar_char * bar_length
+        home_pivot = home_pivot.loc[sorted_players]
+        away_pivot = away_pivot.loc[sorted_players]
 
-        # Apply the ASCII bar transformation to the "series" columns
-        #ascii_styled_df = column_df.applymap(lambda x: ascii_bar(x) if x > 0 else "")
-        #print(ascii_styled_df)
+        # Home matches are '|', away matches are '.' - each streck is a match.
+        def ascii_bar(home, away):
+            return '|' * int(home) + '.' * int(away)
 
-        # Apply the ASCII bar transformation only to the "series" columns
+        column_df = pd.DataFrame(index=sorted_players, columns=series_columns)
+        column_df.index.name = "player name"
         for column in series_columns:
-            column_df[column] = column_df[column].apply(lambda x: ascii_bar(x))
+            column_df[column] = [ascii_bar(home_pivot.loc[p, column], away_pivot.loc[p, column])
+                                  for p in sorted_players]
 
         self.pretty_print(column_df, True, description)
 
@@ -436,6 +454,9 @@ if __name__ == "__main__":
     # Add arguments
     parser.add_argument('-o', '--obfuscate', action="store_true", help="Obfuscate the player names in the output graphs")
     parser.add_argument('-i', '--input', help="The raw input data", type=str, default="sportadmin.csv")
+    parser.add_argument('--home-locations', nargs='+', metavar="PATTERN", default=[],
+                         help="Regex pattern(s) matched against a match's location; any match "
+                              "counts the match as home, everything else as away")
 
     # Parse the arguments
     args = parser.parse_args()

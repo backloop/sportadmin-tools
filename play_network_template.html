@@ -17,6 +17,7 @@
     --group-1: #eb6834;
     --group-2: #1baf7a;
     --edge-neutral: #7c8271;
+    --home-color: #e34948;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -33,6 +34,7 @@
       --group-1: #d95926;
       --group-2: #199e70;
       --edge-neutral: #8b8f7d;
+      --home-color: #e66767;
     }
   }
   :root[data-theme="dark"] {
@@ -49,6 +51,7 @@
     --group-1: #d95926;
     --group-2: #199e70;
     --edge-neutral: #8b8f7d;
+    --home-color: #e66767;
   }
 
   * { box-sizing: border-box; }
@@ -333,12 +336,23 @@
   table.dist-table tr:last-child td { border-bottom: none; }
   table.dist-table tr:hover td { background: var(--surface-sunken); }
   .bar-cell-inner { display: flex; align-items: center; gap: 8px; }
-  .bar-track { height: 8px; flex: none; }
+  .bar-track { height: 8px; flex: none; display: flex; }
   /* one segment per match ("varje streck är en match"), a 1px gap of the
      track's own background between each — the unit width (11px solid +
-     1px gap = 12px period) must match the JS unitPx passed to renderDistTable */
-  .bar-fill {
+     1px gap = 12px period) must match the JS unitPx passed to renderDistTable.
+     Home matches render first (red), then away (blue) - same order as the
+     '|'/'.' characters in the console report. */
+  .bar-fill-home, .bar-fill-away {
     height: 100%;
+  }
+  .bar-fill-home {
+    background-image: repeating-linear-gradient(
+      to right,
+      var(--home-color) 0, var(--home-color) 11px,
+      transparent 11px, transparent 12px
+    );
+  }
+  .bar-fill-away {
     background-image: repeating-linear-gradient(
       to right,
       var(--focus) 0, var(--focus) 11px,
@@ -352,6 +366,16 @@
     min-width: 1.6em;
     text-align: right;
   }
+  .dist-legend {
+    display: flex;
+    gap: 16px;
+    font-size: 12.5px;
+    color: var(--ink-secondary);
+  }
+  .dist-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dist-legend .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  .dist-legend .swatch-home { background: var(--home-color); }
+  .dist-legend .swatch-away { background: var(--focus); }
 
   .copair-list { display: flex; flex-direction: column; gap: 2px; }
   .copair-row {
@@ -409,6 +433,10 @@
       finns spelare som aktivt undviker att anmäla sig till eller spela i
       vissa serier.
     </p>
+    <div class="dist-legend">
+      <span><span class="swatch swatch-home"></span>Hemma</span>
+      <span><span class="swatch swatch-away"></span>Borta</span>
+    </div>
     <div class="dist-table-wrap">
       <table class="dist-table" id="availabilityDistTable">
         <thead><tr><th>Spelare</th></tr></thead>
@@ -421,6 +449,10 @@
     <div class="eyebrow">Säsongsöversikt</div>
     <h2>Fördelning av spelade matcher per serie</h2>
     <p class="lede">Varje streck är en match.</p>
+    <div class="dist-legend">
+      <span><span class="swatch swatch-home"></span>Hemma</span>
+      <span><span class="swatch swatch-away"></span>Borta</span>
+    </div>
     <div class="dist-table-wrap">
       <table class="dist-table" id="playedDistTable">
         <thead><tr><th>Spelare</th></tr></thead>
@@ -547,7 +579,11 @@ const NETWORK_DATA = __NETWORK_DATA_JSON__;
   // ---- season-overview bar tables (static, independent of the graph below) ----
   function renderDistTable(tableEl, tableData, unitPx) {
     const { series_columns, rows } = tableData;
-    const maxCount = Math.max(1, ...rows.map(r => Math.max(...series_columns.map(s => r.counts[s] || 0))));
+    function cellTotal(r, s) {
+      const c = r.counts[s] || { home: 0, away: 0 };
+      return (c.home || 0) + (c.away || 0);
+    }
+    const maxCount = Math.max(1, ...rows.map(r => Math.max(...series_columns.map(s => cellTotal(r, s)))));
     const trackWidth = maxCount * unitPx;
 
     const headRow = tableEl.querySelector('thead tr');
@@ -565,16 +601,20 @@ const NETWORK_DATA = __NETWORK_DATA_JSON__;
       tdName.textContent = r.player;
       tr.appendChild(tdName);
       series_columns.forEach(s => {
-        const count = r.counts[s] || 0;
+        const c = r.counts[s] || { home: 0, away: 0 };
+        const total = (c.home || 0) + (c.away || 0);
         const td = document.createElement('td');
         const inner = document.createElement('div'); inner.className = 'bar-cell-inner';
         const track = document.createElement('div'); track.className = 'bar-track';
         track.style.width = trackWidth + 'px';
-        const fill = document.createElement('div'); fill.className = 'bar-fill';
-        fill.style.width = (count * unitPx) + 'px';
-        track.appendChild(fill);
+        // home matches first (red), then away (blue) - same order as '|'/'.' in the console report
+        const homeFill = document.createElement('div'); homeFill.className = 'bar-fill-home';
+        homeFill.style.width = ((c.home || 0) * unitPx) + 'px';
+        const awayFill = document.createElement('div'); awayFill.className = 'bar-fill-away';
+        awayFill.style.width = ((c.away || 0) * unitPx) + 'px';
+        track.append(homeFill, awayFill);
         const countEl = document.createElement('span'); countEl.className = 'bar-count';
-        countEl.textContent = count || '';
+        countEl.textContent = total || '';
         inner.append(countEl, track);
         td.appendChild(inner);
         tr.appendChild(td);
