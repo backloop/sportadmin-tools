@@ -498,8 +498,8 @@
     </div>
     <div class="control-group">
       <label class="control-label" for="minWeight">Minst antal matcher ihop</label>
-      <input type="range" id="minWeight" min="1" max="7" value="4" step="1">
-      <span id="minWeightValue" aria-hidden="true">4</span>
+      <input type="range" id="minWeight" min="1" max="7" value="5" step="1">
+      <span id="minWeightValue" aria-hidden="true">5</span>
     </div>
     <button class="reset" id="resetBtn" type="button">Återställ</button>
     <div class="legend" id="legend"></div>
@@ -1114,8 +1114,8 @@ const NETWORK_DATA = __NETWORK_DATA_JSON__;
 
   resetBtn.addEventListener('click', () => {
     searchInput.value = '';
-    minWeightInput.value = 4;
-    recluster(4);
+    minWeightInput.value = 5;
+    recluster(5);
   });
 
   recluster(+minWeightInput.value);
