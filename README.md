@@ -79,9 +79,16 @@ Reads `sportadmin.csv` and prints player statistics to the console:
     pipenv run python3 sportadmin_analyzer.py -i sportadmin.csv
 
 Prompts interactively for the season (`vår`/`höst`/`vinter`) on every run. Flags:
-`-i`/`--input PATH` (raw scraped CSV, default `sportadmin.csv`) and
+`-i`/`--input PATH` (raw scraped CSV, default `sportadmin.csv`),
 `-o`/`--obfuscate` (replace player names with `Player_NN` everywhere, as
-in the samples below).
+in the samples below), and `--home-locations PATTERN [PATTERN ...]`
+(regex fragments matched against each match's venue; a match is "home" if
+any pattern matches, else "away" — the availability and played-per-series
+tables split their bars into home/away). With no `--home-locations` given,
+it falls back to `HOME_LOCATIONS` (comma-separated) in a `.settings` file
+next to the script, e.g.:
+
+    HOME_LOCATIONS=Lomma,Pilängsplanen
 
 It also writes `play_network.html`: an interactive force-directed graph of
 which players actually played matches together, clustered live in the

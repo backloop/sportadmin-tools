@@ -17,6 +17,33 @@ import json
 import os
 
 
+def _settings_path():
+    """Return the .settings file path, preferring the current directory
+    (mirrors credentials.py's default_path() lookup order)."""
+    cwd_path = os.path.join(os.getcwd(), ".settings")
+    if os.path.exists(cwd_path):
+        return cwd_path
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".settings")
+
+
+def load_settings(path=None):
+    """Read simple KEY=VALUE lines from an optional .settings file. Missing
+    file is not an error - just returns {}. Currently only HOME_LOCATIONS
+    (a comma-separated list of regex fragments) is recognized."""
+    path = path or _settings_path()
+    values = {}
+    if not os.path.exists(path):
+        return values
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            values[key.strip()] = val.strip().strip('"').strip("'")
+    return values
+
+
 class ReportState():
     PRE_REPORT_AVAILABLE = "Tillgänglig"
     PRE_REPORT_NOT_AVAILABLE = "Ej tillgänglig"
@@ -460,12 +487,17 @@ if __name__ == "__main__":
     # Add arguments
     parser.add_argument('-o', '--obfuscate', action="store_true", help="Obfuscate the player names in the output graphs")
     parser.add_argument('-i', '--input', help="The raw input data", type=str, default="sportadmin.csv")
-    parser.add_argument('--home-locations', nargs='+', metavar="PATTERN", default=[],
+    parser.add_argument('--home-locations', nargs='+', metavar="PATTERN", default=None,
                          help="Regex pattern(s) matched against a match's location; any match "
-                              "counts the match as home, everything else as away")
+                              "counts the match as home, everything else as away. Defaults to "
+                              "HOME_LOCATIONS from .settings (comma-separated) if not given.")
 
     # Parse the arguments
     args = parser.parse_args()
+
+    if args.home_locations is None:
+        raw = load_settings().get("HOME_LOCATIONS", "")
+        args.home_locations = [p.strip() for p in raw.split(",") if p.strip()]
 
     sp = SportadminGamesAnalyzer(args)
     sp.load(args.input)
