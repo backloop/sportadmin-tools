@@ -5,6 +5,7 @@ set -euo pipefail
 # majority-merged CSV, then run the offline checks (cross-run determinism and,
 # if a baseline is given, a diff against it).
 #
+#   SERIES=vår RUNS=5 ./run_verify.sh [baseline.csv]   # defaults to the current year
 #   SERIES=vår YEAR=2025 RUNS=5 ./run_verify.sh [baseline.csv]
 #
 # Outputs under ./out/:
@@ -13,11 +14,14 @@ set -euo pipefail
 #   <prefix>_verify.jsonl    one record per match (grep '"result": "warn"')
 
 SERIES="${SERIES:-vår}"
-YEAR="${YEAR:-2025}"
+YEAR="${YEAR:-$(date +%Y)}"
 RUNS="${RUNS:-5}"
 START="${START:-${YEAR}-01-01}"
 END="${END:-${YEAR}-12-31}"
-PREFIX="${PREFIX:-out/${SERIES}${YEAR}}"
+# Mirrors sportadmin_scraper.py's own auto-naming (PREFIX_series_year_start_end)
+# under ./out/ rather than the default SCRAPER_OUTPUT directory, since these
+# are throwaway verification runs, not regular scrapes.
+PREFIX="${PREFIX:-out/sportadmin_${SERIES}_${YEAR}_${START}_${END}}"
 BASELINE="${1:-}"
 
 mkdir -p "$(dirname "$PREFIX")"

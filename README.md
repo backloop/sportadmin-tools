@@ -29,23 +29,23 @@ is missing.
     # location; a match counts as "home" if any of them match, else "away".
     HOME_LOCATIONS=Lomma,Pilängsplanen
 
-    # sportadmin_scraper.py: full path to write the scraped CSV to. Its
-    # extension is stripped internally to build the prefix the scraper
-    # also uses for PREFIX.run{k}.csv/PREFIX_verify.jsonl. Falls back to
-    # ./sportadmin.csv if unset.
-    SCRAPER_OUTPUT=output_scraper/sportadmin.csv
+    # sportadmin_scraper.py: path+filename prefix to write the scraped CSV
+    # to; the scraper appends .csv (and .run{k}.csv/_verify.jsonl next to
+    # it). Falls back to ./sportadmin.csv if unset.
+    SCRAPER_OUTPUT=output_scraper/sportadmin
 
-    # sportadmin_analyzer.py: full path to read the scraped CSV from.
-    # Falls back to ./sportadmin.csv if unset.
-    ANALYZER_INPUT=output_scraper/sportadmin.csv
-
-    # sportadmin_analyzer.py: full path to write the network graph HTML
-    # to. Falls back to ./sportadmin.html if unset.
-    ANALYZER_OUTPUT=output_analyzer/sportadmin.html
+    # sportadmin_analyzer.py: directory to write the network graph HTML
+    # to, named after the input CSV (e.g. sportadmin_vår_2025.csv ->
+    # sportadmin_vår_2025.html). Falls back to the current directory
+    # if unset.
+    ANALYZER_OUT_DIR=output_analyzer
 
 Each key can also be set for a single run via a matching CLI flag
-(`--home-locations`, scraper's `--output`, analyzer's `-i`/`--input` and
-`--output`), which takes precedence over `.settings`.
+(`--home-locations`, scraper's `--output`, analyzer's `--out-dir`), which
+takes precedence over `.settings`. The scraper writes filenames that vary
+by scope (series/year/date range — see below), so unlike the other two,
+the analyzer's input CSV isn't a `.settings` default: it's a required
+positional argument on every run.
 
 ### Run commands inside pipenv
     pipenv run python3 sportadmin_scraper.py --series-pattern vår --year 2025
@@ -65,10 +65,10 @@ Key flags:
 | flag | meaning |
 |---|---|
 | `--series-pattern RE` | regex matched against series link names (e.g. `vår`) |
-| `--year YYYY` | Period dropdown selection |
-| `--start-date` / `--end-date` | keep only matches in the range |
+| `--year YYYY` | Period dropdown selection (default: current year) |
+| `--start-date` / `--end-date` | keep only matches in the range (default: no bound on that side) |
 | `--runs N` | scrape N times; write `PREFIX.run{k}.csv` + a majority-merged `PREFIX.csv` |
-| `--output PREFIX` | output path prefix (default: `SCRAPER_OUTPUT` from `.settings` or `./sportadmin.csv` if unset; the directory is created if missing) |
+| `--output PREFIX` | output path prefix (default: `SCRAPER_OUTPUT` from `.settings` or `./sportadmin` if unset, with `--series-pattern`/`--year` appended (defaulted if not given) plus `--start-date`/`--end-date` appended only if given, e.g. `sportadmin_vår_2025.csv`; the directory is created if missing) |
 | `--verify` | run per-match consistency checks; write `PREFIX_verify.jsonl` |
 | `--max-matches N` | stop after N matches (tuning aid) |
 | `--debug` | verbose logging |
@@ -105,11 +105,12 @@ Reads `sportadmin.csv` and prints player statistics to the console:
 * How many times each player played in each series.
 * Which weekends players played multiple games.
 
-    pipenv run python3 sportadmin_analyzer.py -i sportadmin.csv
+    pipenv run python3 sportadmin_analyzer.py sportadmin.csv
 
-Prompts interactively for the season (`vår`/`höst`/`vinter`) on every run. Flags:
-`-i`/`--input PATH` (raw scraped CSV; default: `ANALYZER_INPUT` from
-`.settings`, or `./sportadmin.csv` if unset),
+`INPUT` (the raw scraped CSV) is a required positional argument — the
+scraper's output filenames vary by scope (series/year/date range), so
+there's no fixed default to fall back to. Prompts interactively for the
+season (`vår`/`höst`/`vinter`) on every run. Flags:
 `-o`/`--obfuscate` (replace player names with `Player_NN` everywhere, as
 in the samples below), and `--home-locations PATTERN [PATTERN ...]`
 (regex fragments matched against each match's venue; a match is "home" if
@@ -120,14 +121,15 @@ next to the script, e.g.:
 
     HOME_LOCATIONS=Lomma,Pilängsplanen
 
-and `--output FILE` (output path for the network graph HTML, replacing the
-default `sportadmin.html` name; default: `ANALYZER_OUTPUT` from
-`.settings`, or `./sportadmin.html` if unset; the directory is created
-if missing).
+and `--out-dir DIR` (output directory for the network graph HTML; default:
+`ANALYZER_OUT_DIR` from `.settings`, or the current directory if unset;
+the directory is created if missing).
 
-It also writes `sportadmin.html`: an interactive force-directed graph of
-which players actually played matches together, clustered live in the
-browser — a k-clique-percolation algorithm re-runs as you drag the "Minst
+It also writes an HTML file into that directory, named after the input CSV
+(e.g. `sportadmin_vår_2025.csv` -> `sportadmin_vår_2025.html`): an
+interactive force-directed graph of which players actually played matches
+together, clustered live in the browser — a k-clique-percolation algorithm
+re-runs as you drag the "Minst
 antal matcher ihop" (minimum matches together) slider, so tightening or
 loosening the threshold regroups and recolors players on the fly (a player
 can end up in zero, one, or several groups). The same page opens with

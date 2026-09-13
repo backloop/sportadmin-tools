@@ -242,7 +242,7 @@ class SportadminGamesAnalyzer:
             "multiples_table": self._multiples_table((ReportState.CALLED_COMING,)),
         }
 
-        self._write_play_network_html(network_data, "sportadmin.html")
+        self._write_play_network_html(network_data)
 
 
     def _multiples_table(self, states):
@@ -297,7 +297,7 @@ class SportadminGamesAnalyzer:
         return {"series_columns": series_columns, "rows": rows}
 
 
-    def _write_play_network_html(self, network_data, filename):
+    def _write_play_network_html(self, network_data):
         template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sportadmin_template.html")
         with open(template_path, encoding="utf-8") as f:
             template = f.read()
@@ -311,12 +311,14 @@ class SportadminGamesAnalyzer:
         html_out = template.replace("__NETWORK_DATA_JSON__", json_str)
         html_out = html_out.replace("__PAGE_TITLE__", html.escape(page_title))
 
-        # ANALYZER_OUTPUT/--output name the full output file (e.g.
-        # output_analyzer/sportadmin.html), overriding the default filename.
-        out_path = getattr(self.args, "output_path", "") or filename
-        out_dir = os.path.dirname(out_path)
+        # Output filename mirrors the input CSV's basename (e.g.
+        # sportadmin_vår_2025.csv -> sportadmin_vår_2025.html), placed in
+        # ANALYZER_OUT_DIR/--out-dir (or the current directory if unset).
+        basename = os.path.splitext(os.path.basename(self.args.input))[0]
+        out_dir = getattr(self.args, "out_dir", "") or ""
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, basename + ".html") if out_dir else basename + ".html"
 
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(html_out)
@@ -467,32 +469,27 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze player data exported from SportAdmin")
 
     # Add arguments
+    parser.add_argument('input', type=str, help="The raw scraped CSV to analyze")
     parser.add_argument('-o', '--obfuscate', action="store_true", help="Obfuscate the player names in the output graphs")
-    parser.add_argument('-i', '--input', type=str, default=None,
-                         help="The raw input data (default: ANALYZER_INPUT from "
-                              ".settings, or ./sportadmin.csv if unset)")
     parser.add_argument('--home-locations', nargs='+', metavar="PATTERN", default=None,
                          help="Regex pattern(s) matched against a match's location; any match "
                               "counts the match as home, everything else as away. Defaults to "
                               "HOME_LOCATIONS from .settings (comma-separated) if not given.")
-    parser.add_argument('--output', metavar="FILE", default=None,
-                         help="Output path for the network graph HTML (default: "
-                              "ANALYZER_OUTPUT from .settings, or ./sportadmin.html if unset)")
+    parser.add_argument('--out-dir', metavar="DIR", default=None,
+                         help="Output directory for the network graph HTML, named "
+                              "after the input CSV (e.g. foo.csv -> DIR/foo.html); "
+                              "default: ANALYZER_OUT_DIR from .settings, or the "
+                              "current directory if unset")
 
     # Parse the arguments
     args = parser.parse_args()
-
-    if args.input is None:
-        args.input = load_settings().get("ANALYZER_INPUT", "").strip() or "sportadmin.csv"
 
     if args.home_locations is None:
         raw = load_settings().get("HOME_LOCATIONS", "")
         args.home_locations = [p.strip() for p in raw.split(",") if p.strip()]
 
-    if args.output is not None:
-        args.output_path = args.output
-    else:
-        args.output_path = load_settings().get("ANALYZER_OUTPUT", "").strip()
+    if args.out_dir is None:
+        args.out_dir = load_settings().get("ANALYZER_OUT_DIR", "").strip()
 
     sp = SportadminGamesAnalyzer(args)
     sp.load(args.input)

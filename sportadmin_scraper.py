@@ -896,13 +896,13 @@ if __name__ == "__main__":
     ap.add_argument("--credentials", default=None,
                     help="Path to credentials file "
                          "(default: ./.credentials, then alongside this script)")
-    ap.add_argument("--start-date", default="2001-01-01",
-                    help="Earliest match date to keep (YYYY-MM-DD)")
-    ap.add_argument("--end-date", default=datetime.now().strftime("%Y-%m-%d"),
-                    help="Latest match date to keep (YYYY-MM-DD)")
-    ap.add_argument("--year", default="2025",
-                    help="Year to select in the Period dropdown")
-    ap.add_argument("--series-pattern", default="",
+    ap.add_argument("--start-date", default=None,
+                    help="Earliest match date to keep (YYYY-MM-DD; default: no lower bound)")
+    ap.add_argument("--end-date", default=None,
+                    help="Latest match date to keep (YYYY-MM-DD; default: no upper bound)")
+    ap.add_argument("--year", default=None,
+                    help="Year to select in the Period dropdown (default: current year)")
+    ap.add_argument("--series-pattern", default=None,
                     help="Regex matched against series link names (e.g. vår)")
     ap.add_argument("--runs", type=int, default=1,
                     help="Scrape N times in one session; writes PREFIX.run{k}.csv "
@@ -911,8 +911,9 @@ if __name__ == "__main__":
                     help="Deprecated alias for --runs")
     ap.add_argument("--output", default=None,
                     help="Output path prefix (default: SCRAPER_OUTPUT from "
-                         ".settings with its extension stripped, or "
-                         "./sportadmin.csv if unset)")
+                         ".settings, or ./sportadmin if unset; --series-pattern "
+                         "and --year (defaulted if not given) plus --start-date/"
+                         "--end-date (only if given) are appended to it)")
     ap.add_argument("--verify", action="store_true",
                     help="Run per-match consistency checks; write PREFIX_verify.jsonl")
     ap.add_argument("--max-matches", type=int, default=0,
@@ -929,19 +930,31 @@ if __name__ == "__main__":
 
     runs = args.repeat if args.repeat is not None else args.runs
     runs = max(1, runs)
+
+    args.year = args.year or datetime.now().strftime("%Y")
+    args.series_pattern = args.series_pattern or ""
+    # --start-date/--end-date stay None when not given - no date filtering
+    # is applied (see SportadminGamesScraper.collect()) - rather than
+    # silently defaulting to a wide range.
+
+    # The resolved scope values narrow the filename, so e.g. two runs a
+    # year apart never silently collide on the same prefix. Unset dates
+    # are simply omitted.
+    scope_parts = [re.sub(r"[^0-9A-Za-zÅÄÖåäö]+", "-", v).strip("-")
+                   for v in (args.series_pattern, args.year, args.start_date, args.end_date)
+                   if v]
+
     if args.output is not None:
         prefix = args.output
     else:
-        # SCRAPER_OUTPUT names a full output file (e.g. output_scraper/sportadmin.csv);
-        # prefix is that path with its extension stripped, since _write_csv()/
-        # _write_jsonl() append their own (.csv, .run{k}.csv, _verify.jsonl).
-        full_path = load_settings().get("SCRAPER_OUTPUT", "").strip()
-        prefix = os.path.splitext(full_path)[0] if full_path else "sportadmin"
+        base = load_settings().get("SCRAPER_OUTPUT", "").strip() or "sportadmin"
+        prefix = "_".join([base] + scope_parts)
     out_dir = os.path.dirname(prefix)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-    start_date = datetime.fromisoformat(args.start_date)
-    end_date = datetime.fromisoformat(args.end_date)
+
+    start_date = datetime.fromisoformat(args.start_date) if args.start_date else None
+    end_date = datetime.fromisoformat(args.end_date) if args.end_date else None
     email, password = load_credentials(args.credentials)
 
     exit_code = 0
