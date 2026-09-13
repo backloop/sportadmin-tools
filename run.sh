@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-# One scrape of the spring ("vår") season into sportadmin.csv.
+# One scrape of the spring ("vår") season into SCRAPER_OUTPUT/sportadmin.csv
+# (see .settings; defaults to ./sportadmin.csv if unset).
 # Credentials come from the untracked ./.credentials file (chmod 600); see
 # credentials.py. Use --credentials <path> to point elsewhere.
 #

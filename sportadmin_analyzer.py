@@ -16,32 +16,7 @@ import itertools
 import json
 import os
 
-
-def _settings_path():
-    """Return the .settings file path, preferring the current directory
-    (mirrors credentials.py's default_path() lookup order)."""
-    cwd_path = os.path.join(os.getcwd(), ".settings")
-    if os.path.exists(cwd_path):
-        return cwd_path
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".settings")
-
-
-def load_settings(path=None):
-    """Read simple KEY=VALUE lines from an optional .settings file. Missing
-    file is not an error - just returns {}. Currently only HOME_LOCATIONS
-    (a comma-separated list of regex fragments) is recognized."""
-    path = path or _settings_path()
-    values = {}
-    if not os.path.exists(path):
-        return values
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            values[key.strip()] = val.strip().strip('"').strip("'")
-    return values
+from settings import load_settings
 
 
 class ReportState():
@@ -211,16 +186,16 @@ class SportadminGamesAnalyzer:
 
 
     # minimum clique size for the client-side k-clique percolation
-    # clustering in play_network_template.html (kept here as the single
+    # clustering in sportadmin_template.html (kept here as the single
     # source of truth, emitted into network_data as "clique_k")
     CLIQUE_K = 3
 
     def play_network(self):
         """Build a co-occurrence graph of which players actually played
         matches together and render it as an interactive force-directed
-        graph (play_network.html). Clustering itself runs client-side,
+        graph (sportadmin.html). Clustering itself runs client-side,
         live, driven by the "minst antal matcher ihop" slider - see
-        computeClusters()/recluster() in play_network_template.html."""
+        computeClusters()/recluster() in sportadmin_template.html."""
 
         played = self.df[self.df['ReportState'] == ReportState.CALLED_COMING]
 
@@ -267,7 +242,7 @@ class SportadminGamesAnalyzer:
             "multiples_table": self._multiples_table((ReportState.CALLED_COMING,)),
         }
 
-        self._write_play_network_html(network_data, "play_network.html")
+        self._write_play_network_html(network_data, "sportadmin.html")
 
 
     def _multiples_table(self, states):
@@ -323,7 +298,7 @@ class SportadminGamesAnalyzer:
 
 
     def _write_play_network_html(self, network_data, filename):
-        template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "play_network_template.html")
+        template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sportadmin_template.html")
         with open(template_path, encoding="utf-8") as f:
             template = f.read()
 
@@ -336,7 +311,14 @@ class SportadminGamesAnalyzer:
         html_out = template.replace("__NETWORK_DATA_JSON__", json_str)
         html_out = html_out.replace("__PAGE_TITLE__", html.escape(page_title))
 
-        with open(filename, "w", encoding="utf-8") as f:
+        # ANALYZER_OUTPUT/--output name the full output file (e.g.
+        # output_analyzer/sportadmin.html), overriding the default filename.
+        out_path = getattr(self.args, "output_path", "") or filename
+        out_dir = os.path.dirname(out_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+
+        with open(out_path, "w", encoding="utf-8") as f:
             f.write(html_out)
 
 
@@ -486,18 +468,31 @@ if __name__ == "__main__":
 
     # Add arguments
     parser.add_argument('-o', '--obfuscate', action="store_true", help="Obfuscate the player names in the output graphs")
-    parser.add_argument('-i', '--input', help="The raw input data", type=str, default="sportadmin.csv")
+    parser.add_argument('-i', '--input', type=str, default=None,
+                         help="The raw input data (default: ANALYZER_INPUT from "
+                              ".settings, or ./sportadmin.csv if unset)")
     parser.add_argument('--home-locations', nargs='+', metavar="PATTERN", default=None,
                          help="Regex pattern(s) matched against a match's location; any match "
                               "counts the match as home, everything else as away. Defaults to "
                               "HOME_LOCATIONS from .settings (comma-separated) if not given.")
+    parser.add_argument('--output', metavar="FILE", default=None,
+                         help="Output path for the network graph HTML (default: "
+                              "ANALYZER_OUTPUT from .settings, or ./sportadmin.html if unset)")
 
     # Parse the arguments
     args = parser.parse_args()
 
+    if args.input is None:
+        args.input = load_settings().get("ANALYZER_INPUT", "").strip() or "sportadmin.csv"
+
     if args.home_locations is None:
         raw = load_settings().get("HOME_LOCATIONS", "")
         args.home_locations = [p.strip() for p in raw.split(",") if p.strip()]
+
+    if args.output is not None:
+        args.output_path = args.output
+    else:
+        args.output_path = load_settings().get("ANALYZER_OUTPUT", "").strip()
 
     sp = SportadminGamesAnalyzer(args)
     sp.load(args.input)

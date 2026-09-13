@@ -16,6 +16,7 @@ import traceback
 import os
 
 from credentials import load_credentials
+from settings import load_settings
 import sa_checks
 
 DEFAULT_TIMEOUT = 10_000
@@ -908,8 +909,10 @@ if __name__ == "__main__":
                          "per run and a majority-merged PREFIX.csv")
     ap.add_argument("--repeat", type=int, default=None,
                     help="Deprecated alias for --runs")
-    ap.add_argument("--out", default="sportadmin",
-                    help="Output path prefix (default: sportadmin)")
+    ap.add_argument("--output", default=None,
+                    help="Output path prefix (default: SCRAPER_OUTPUT from "
+                         ".settings with its extension stripped, or "
+                         "./sportadmin.csv if unset)")
     ap.add_argument("--verify", action="store_true",
                     help="Run per-match consistency checks; write PREFIX_verify.jsonl")
     ap.add_argument("--max-matches", type=int, default=0,
@@ -926,7 +929,17 @@ if __name__ == "__main__":
 
     runs = args.repeat if args.repeat is not None else args.runs
     runs = max(1, runs)
-    prefix = args.out
+    if args.output is not None:
+        prefix = args.output
+    else:
+        # SCRAPER_OUTPUT names a full output file (e.g. output_scraper/sportadmin.csv);
+        # prefix is that path with its extension stripped, since _write_csv()/
+        # _write_jsonl() append their own (.csv, .run{k}.csv, _verify.jsonl).
+        full_path = load_settings().get("SCRAPER_OUTPUT", "").strip()
+        prefix = os.path.splitext(full_path)[0] if full_path else "sportadmin"
+    out_dir = os.path.dirname(prefix)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     start_date = datetime.fromisoformat(args.start_date)
     end_date = datetime.fromisoformat(args.end_date)
     email, password = load_credentials(args.credentials)

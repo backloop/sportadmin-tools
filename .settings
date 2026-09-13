@@ -1,4 +1,0 @@
-# Default --home-locations patterns for sportadmin_analyzer.py, used when
-# the flag isn't given on the command line. Comma-separated regex fragments;
-# a match's location counts as home if it matches any of them.
-HOME_LOCATIONS=Lomma,Pilängsplanen

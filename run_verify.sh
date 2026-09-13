@@ -25,7 +25,7 @@ mkdir -p "$(dirname "$PREFIX")"
 PW_DISABLE_CRASHPAD=1 xvfb-run -a pipenv run python sportadmin_scraper.py \
     --series-pattern "$SERIES" --year "$YEAR" \
     --start-date "$START" --end-date "$END" \
-    --verify --runs "$RUNS" --out "$PREFIX"
+    --verify --runs "$RUNS" --output "$PREFIX"
 
 verify_args=(--csv "${PREFIX}.csv" --runs "${PREFIX}".run*.csv --season "$SERIES")
 [ -n "$BASELINE" ] && verify_args+=(--baseline "$BASELINE")
