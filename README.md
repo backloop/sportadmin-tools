@@ -27,7 +27,7 @@ is missing.
 
     # sportadmin_analyzer.py: regex fragments matched against a match's
     # location; a match counts as "home" if any of them match, else "away".
-    HOME_LOCATIONS=Lomma,Pilängsplanen
+    HOME_LOCATIONS="<location1>","<location2>"
 
     # sportadmin_scraper.py: path+filename prefix to write the scraped CSV
     # to; the scraper appends .csv (and .run{k}.csv/_verify.jsonl next to
