@@ -119,7 +119,7 @@ tables split their bars into home/away). With no `--home-locations` given,
 it falls back to `HOME_LOCATIONS` (comma-separated) in a `.settings` file
 next to the script, e.g.:
 
-    HOME_LOCATIONS=Lomma,Pilängsplanen
+    HOME_LOCATIONS="<location1>","<location2>"
 
 and `--out-dir DIR` (output directory for the network graph HTML; default:
 `ANALYZER_OUT_DIR` from `.settings`, or the current directory if unset;
