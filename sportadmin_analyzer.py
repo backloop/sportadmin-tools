@@ -17,6 +17,7 @@ import json
 import os
 
 from settings import load_settings
+import generate_index
 
 
 class ReportState():
@@ -322,6 +323,8 @@ class SportadminGamesAnalyzer:
 
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(html_out)
+
+        generate_index.build_index(out_dir or ".")
 
 
     def played_distribution(self):

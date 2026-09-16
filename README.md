@@ -138,6 +138,17 @@ series, and double-booked weeks — the same data as the three console
 reports above, rendered as bar tables. Open the file directly in a
 browser; it needs no server.
 
+### generate_index.py
+Builds `index.html` in the analyzer's output directory: a horizontal tab
+bar with one tab per `sportadmin_analyzer.py` output file found there
+(labeled from each file's `<title>`), switching an iframe between them.
+Re-run it after adding/removing analyzer output to refresh the tab list.
+
+    pipenv run python3 generate_index.py
+
+`--dir DIR` overrides which directory to scan (default: `ANALYZER_OUT_DIR`
+from `.settings`, or the current directory if unset).
+
 ## Output samples
 ```
 ======================================
