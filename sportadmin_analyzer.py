@@ -210,8 +210,8 @@ class SportadminGamesAnalyzer:
 
     def analyze(self):
 
-        self.available_distribution()
         self.played_distribution()
+        self.available_distribution()
         self.played_multiples()
         self.play_network()
 
@@ -276,10 +276,10 @@ class SportadminGamesAnalyzer:
             "clique_k": self.CLIQUE_K,
             "nodes": nodes,
             "edges": edges,
-            "availability_table": self._series_breakdown_table(
-                (ReportState.PRE_REPORT_AVAILABLE, ReportState.CALLED_COMING), sort_by_total=True),
             "played_table": self._series_breakdown_table(
                 (ReportState.CALLED_COMING,), sort_by_total=False),
+            "availability_table": self._series_breakdown_table(
+                (ReportState.PRE_REPORT_AVAILABLE, ReportState.CALLED_COMING), sort_by_total=True),
             "multiples_table": self._multiples_table((ReportState.CALLED_COMING,)),
         }
 

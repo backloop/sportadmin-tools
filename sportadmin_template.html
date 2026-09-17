@@ -426,6 +426,22 @@
 <div class="page">
   <section class="dist-section">
     <div class="eyebrow">Säsongsöversikt</div>
+    <h2>Fördelning av spelade matcher per serie</h2>
+    <p class="lede">Varje streck är en match.</p>
+    <div class="dist-legend">
+      <span><span class="swatch swatch-home"></span>Hemma</span>
+      <span><span class="swatch swatch-away"></span>Borta</span>
+    </div>
+    <div class="dist-table-wrap">
+      <table class="dist-table" id="playedDistTable">
+        <thead><tr><th>Spelare</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="dist-section">
+    <div class="eyebrow">Säsongsöversikt</div>
     <h2>Fördelning av tillgänglighet</h2>
     <p class="lede">
       (förhandsrapporterad som "tillgänglig" eller faktiskt spelat).
@@ -439,22 +455,6 @@
     </div>
     <div class="dist-table-wrap">
       <table class="dist-table" id="availabilityDistTable">
-        <thead><tr><th>Spelare</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="dist-section">
-    <div class="eyebrow">Säsongsöversikt</div>
-    <h2>Fördelning av spelade matcher per serie</h2>
-    <p class="lede">Varje streck är en match.</p>
-    <div class="dist-legend">
-      <span><span class="swatch swatch-home"></span>Hemma</span>
-      <span><span class="swatch swatch-away"></span>Borta</span>
-    </div>
-    <div class="dist-table-wrap">
-      <table class="dist-table" id="playedDistTable">
         <thead><tr><th>Spelare</th></tr></thead>
         <tbody></tbody>
       </table>
@@ -623,8 +623,8 @@ const NETWORK_DATA = __NETWORK_DATA_JSON__;
     });
   }
 
-  renderDistTable(document.getElementById('availabilityDistTable'), NETWORK_DATA.availability_table, 12);
   renderDistTable(document.getElementById('playedDistTable'), NETWORK_DATA.played_table, 12);
+  renderDistTable(document.getElementById('availabilityDistTable'), NETWORK_DATA.availability_table, 12);
 
   (function renderMultiplesTable() {
     const tbody = document.querySelector('#multiplesTable tbody');
