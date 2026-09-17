@@ -109,11 +109,15 @@ Reads `sportadmin.csv` and prints player statistics to the console:
 
 `INPUT` (the raw scraped CSV) is a required positional argument — the
 scraper's output filenames vary by scope (series/year/date range), so
-there's no fixed default to fall back to. Flags:
+there's no fixed default to fall back to. `INPUT` can also be a directory,
+in which case every `*.csv` file directly inside it is analyzed in turn
+(each writing its own network graph HTML, plus one shared `index.html` —
+see `generate_index.py` below); with `--season`, a file missing that
+season is skipped with a warning rather than aborting the batch. Flags:
 `--season {vår,höst,vinter}` (only analyze that season; without it, every
-season in the file is analyzed together, labeled `alla`),
-`--list` (print the seasons present in the input CSV and exit, instead of
-analyzing),
+season in each file is analyzed together, labeled `alla`),
+`--list` (print the seasons present across the input CSV(s) and exit,
+instead of analyzing),
 `-o`/`--obfuscate` (replace player names with `Player_NN` everywhere, as
 in the samples below), and `--home-locations PATTERN [PATTERN ...]`
 (regex fragments matched against each match's venue; a match is "home" if

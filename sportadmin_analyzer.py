@@ -15,12 +15,25 @@ import collections
 import itertools
 import json
 import os
+import glob
 
 from settings import load_settings
 import generate_index
 
 
 SEASONS = ("vår", "höst", "vinter")
+
+
+class NoMatchingSeasonError(Exception):
+    """Raised by load() when --season filters out every row in a file."""
+
+
+def resolve_input_files(path):
+    """Accept either a single CSV path or a directory - in the latter case,
+    every *.csv file directly inside it is analyzed in turn."""
+    if os.path.isdir(path):
+        return sorted(glob.glob(os.path.join(path, "*.csv")))
+    return [path]
 
 
 def detect_seasons(filename):
@@ -165,9 +178,9 @@ class SportadminGamesAnalyzer:
 
         if not data:
             available = sorted(detect_seasons(filename), key=SEASONS.index)
-            print(f"ERROR: no rows found for season {self.season!r} in {filename}. "
-                  f"Seasons present: {', '.join(available) if available else '(none detected)'}")
-            exit(1)
+            raise NoMatchingSeasonError(
+                f"no rows found for season {self.season!r} in {filename}. "
+                f"Seasons present: {', '.join(available) if available else '(none detected)'}")
 
         # all matches must be within the same year (artificial limitation for pretty_print()
         years = {row[0].year for row in data}
@@ -497,7 +510,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze player data exported from SportAdmin")
 
     # Add arguments
-    parser.add_argument('input', type=str, help="The raw scraped CSV to analyze")
+    parser.add_argument('input', type=str,
+                         help="The raw scraped CSV to analyze, or a directory - "
+                              "every *.csv file directly inside it is then analyzed in turn")
     parser.add_argument('-o', '--obfuscate', action="store_true", help="Obfuscate the player names in the output graphs")
     parser.add_argument('--home-locations', nargs='+', metavar="PATTERN", default=None,
                          help="Regex pattern(s) matched against a match's location; any match "
@@ -517,9 +532,16 @@ if __name__ == "__main__":
     # Parse the arguments
     args = parser.parse_args()
 
+    input_files = resolve_input_files(args.input)
+    if not input_files:
+        raise SystemExit(f"No .csv files found in {args.input!r}")
+
     if args.list:
         order = {s: i for i, s in enumerate(SEASONS)}
-        for season in sorted(detect_seasons(args.input), key=lambda s: order[s]):
+        seasons = set()
+        for f in input_files:
+            seasons |= detect_seasons(f)
+        for season in sorted(seasons, key=lambda s: order[s]):
             print(season)
         raise SystemExit(0)
 
@@ -530,6 +552,26 @@ if __name__ == "__main__":
     if args.out_dir is None:
         args.out_dir = load_settings().get("ANALYZER_OUT_DIR", "").strip()
 
-    sp = SportadminGamesAnalyzer(args)
-    sp.load(args.input)
-    sp.analyze()
+    batch = len(input_files) > 1
+    analyzed = 0
+    for csv_path in input_files:
+        if batch:
+            print(f"\n### {csv_path} ###")
+        file_args = argparse.Namespace(**vars(args))
+        file_args.input = csv_path
+        sp = SportadminGamesAnalyzer(file_args)
+        try:
+            sp.load(csv_path)
+        except NoMatchingSeasonError as e:
+            # A directory scan expects some files not to have the requested
+            # season - skip those and keep going; a single explicit file
+            # with no matching rows is a real usage error, so still fail.
+            if batch:
+                print(f"WARNING: {e}; skipping")
+                continue
+            raise SystemExit(f"ERROR: {e}")
+        sp.analyze()
+        analyzed += 1
+
+    if batch and analyzed == 0:
+        raise SystemExit(f"ERROR: no files in {args.input!r} matched season {args.season!r}")
