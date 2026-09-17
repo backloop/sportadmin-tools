@@ -109,8 +109,11 @@ Reads `sportadmin.csv` and prints player statistics to the console:
 
 `INPUT` (the raw scraped CSV) is a required positional argument — the
 scraper's output filenames vary by scope (series/year/date range), so
-there's no fixed default to fall back to. Prompts interactively for the
-season (`vår`/`höst`/`vinter`) on every run. Flags:
+there's no fixed default to fall back to. Flags:
+`--season {vår,höst,vinter}` (only analyze that season; without it, every
+season in the file is analyzed together, labeled `alla`),
+`--list` (print the seasons present in the input CSV and exit, instead of
+analyzing),
 `-o`/`--obfuscate` (replace player names with `Player_NN` everywhere, as
 in the samples below), and `--home-locations PATTERN [PATTERN ...]`
 (regex fragments matched against each match's venue; a match is "home" if

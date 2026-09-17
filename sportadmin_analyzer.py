@@ -20,6 +20,24 @@ from settings import load_settings
 import generate_index
 
 
+SEASONS = ("vår", "höst", "vinter")
+
+
+def detect_seasons(filename):
+    """Return the set of season names (see SEASONS) whose marker appears in
+    any row's raw series-name field of the given scraped CSV."""
+    seasons = set()
+    with open(filename, newline='') as csvfile:
+        reader = csv.reader(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
+        for row in reader:
+            if len(row) < 3:
+                continue
+            for season in SEASONS:
+                if season in row[2]:
+                    seasons.add(season)
+    return seasons
+
+
 class ReportState():
     PRE_REPORT_AVAILABLE = "Tillgänglig"
     PRE_REPORT_NOT_AVAILABLE = "Ej tillgänglig"
@@ -129,18 +147,27 @@ class SportadminGamesAnalyzer:
             header.insert(3, "series")
             header.insert(4, "home_away")
 
-        # filter on season
-        self.season = input("Which season [vår, höst, vinter]? ")
-        if not self.season in ("vår", "höst", "vinter"):
-            print("ERROR: Incorrect season")
-            exit(1)
-        data = filter(lambda row: self.season in row[7], data)
+        # filter on season, if --season was given; otherwise analyze
+        # everything in the file (argparse's choices=SEASONS already
+        # rejects an invalid --season value before we get here).
+        season = getattr(self.args, "season", None)
+        if season:
+            self.season = season
+            data = filter(lambda row: self.season in row[7], data)
+        else:
+            self.season = "alla"
 
         # filter out external players, where player names start with "- <first name> <last name>"
         #data = filter(lambda row: row[8][:2] != "- ", data)
 
         # expand the filter, otherwise after a single walkthrough the iterator is exhausted
         data = list(data)
+
+        if not data:
+            available = sorted(detect_seasons(filename), key=SEASONS.index)
+            print(f"ERROR: no rows found for season {self.season!r} in {filename}. "
+                  f"Seasons present: {', '.join(available) if available else '(none detected)'}")
+            exit(1)
 
         # all matches must be within the same year (artificial limitation for pretty_print()
         years = {row[0].year for row in data}
@@ -467,8 +494,6 @@ class SportadminGamesAnalyzer:
 
 
 if __name__ == "__main__":
-    print("Hello World!")
-
     parser = argparse.ArgumentParser(description="Analyze player data exported from SportAdmin")
 
     # Add arguments
@@ -483,9 +508,20 @@ if __name__ == "__main__":
                               "after the input CSV (e.g. foo.csv -> DIR/foo.html); "
                               "default: ANALYZER_OUT_DIR from .settings, or the "
                               "current directory if unset")
+    parser.add_argument('--season', choices=SEASONS, default=None,
+                         help="Only analyze this season. Without it, all "
+                              "data in the file is analyzed together.")
+    parser.add_argument('--list', action="store_true",
+                         help="List the seasons present in the input CSV and exit")
 
     # Parse the arguments
     args = parser.parse_args()
+
+    if args.list:
+        order = {s: i for i, s in enumerate(SEASONS)}
+        for season in sorted(detect_seasons(args.input), key=lambda s: order[s]):
+            print(season)
+        raise SystemExit(0)
 
     if args.home_locations is None:
         raw = load_settings().get("HOME_LOCATIONS", "")
