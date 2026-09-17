@@ -23,13 +23,13 @@ SEASON_ORDER = {"vår": 0, "höst": 1, "vinter": 2}
 
 
 def _tab_label(path):
-    """Prefer the page's own <title>; fall back to a cleaned-up filename."""
-    with open(path, encoding="utf-8") as f:
-        head = f.read(4096)
-    m = re.search(r"<title>([^<]*)</title>", head)
-    if m:
-        return m.group(1).strip()
+    """Derive "<season> <year>" from the filename (e.g.
+    sportadmin_vår_2025.html -> "vår 2025"); fall back to a cleaned-up
+    filename if it doesn't carry a recognizable season/year."""
     name = os.path.splitext(os.path.basename(path))[0]
+    m = re.search(r"(vår|höst|vinter).*?(\d{4})", name, re.IGNORECASE)
+    if m:
+        return f"{m.group(1).lower()} {m.group(2)}"
     name = re.sub(r"^sportadmin_?", "", name)
     return name.replace("_", " ") or os.path.basename(path)
 
