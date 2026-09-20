@@ -136,6 +136,11 @@ class SportadminGamesScraper:
         self.year_label = None
         self.period_set = False
 
+        # training-mode (Kallelser) navigation state
+        self.trainings_filter_set = False
+        self.activity_type = None
+        self.expected_activity_name = None
+
     # ------------------------------------------------------------------ waits
 
     def wait_for_blazor_idle(self, frame, quiet_ms=250, timeout_ms=6000,
@@ -329,6 +334,27 @@ class SportadminGamesScraper:
         self.row_count = rows.count()
         log.info("series %r: %d list rows", self.series_name, self.row_count)
         return rows
+
+    def _login(self, email, password):
+        """Log in once per browser session; later calls are a no-op."""
+        if self._logged_in:
+            return
+        self.page.goto("https://identity.sportadmin.se/identity/account/login")
+        self.page.locator("#loginemail").fill(email)
+        self.page.locator("#loginpass").fill(password)
+        # Button label is locale-dependent ("Log in" / "Logga in"); the
+        # submit control inside the login form is the stable target.
+        login_btn = self.page.locator(
+            "#loginbutton, form button[type=submit], "
+            "button:has-text('Log in'), button:has-text('Logga in')").first
+        login_btn.click()
+        # "verifierar behörighet" and friends can take ~20 s
+        log.info("waiting for dashboard iframes")
+        self.page.locator("#vpframe_1") \
+            .content_frame.locator(".idealis-fast-paginator") \
+            .first \
+            .wait_for(timeout=60000)
+        self._logged_in = True
 
     def _printa_frame(self):
         """Return the real Frame for the classic-ASP matches table (name=printa)."""
@@ -624,6 +650,10 @@ class SportadminGamesScraper:
         ("Ej kallad", re.compile(r"^Ej kallad \(")),
     )
 
+    # Same tab labels/regexes as TABS, first two entries only — training
+    # activities under "Kallelser" only need Kommer/Kommer ej collected.
+    TRAINING_TABS = TABS[:2]
+
     def parse_single_match(self, row):
         """Open one match from the list and harvest all four attendance tabs.
 
@@ -789,23 +819,7 @@ class SportadminGamesScraper:
         #
         # LOGIN (once per browser session; later runs reuse the session)
         #
-        if not self._logged_in:
-            self.page.goto("https://identity.sportadmin.se/identity/account/login")
-            self.page.locator("#loginemail").fill(email)
-            self.page.locator("#loginpass").fill(password)
-            # Button label is locale-dependent ("Log in" / "Logga in"); the
-            # submit control inside the login form is the stable target.
-            login_btn = self.page.locator(
-                "#loginbutton, form button[type=submit], "
-                "button:has-text('Log in'), button:has-text('Logga in')").first
-            login_btn.click()
-            # "verifierar behörighet" and friends can take ~20 s
-            log.info("waiting for dashboard iframes")
-            self.page.locator("#vpframe_1") \
-                .content_frame.locator(".idealis-fast-paginator") \
-                .first \
-                .wait_for(timeout=60000)
-            self._logged_in = True
+        self._login(email, password)
 
         #
         # ON ACTIVITIES LIST PAGE
@@ -867,6 +881,321 @@ class SportadminGamesScraper:
                  self.run_idx, len(data), self.run_flags or "none")
         return data
 
+    def _wait_kallelser_table_stable(self, fl, min_stable=3, timeout_s=10):
+        """Poll the Kallelser table's row count until it's unchanged across
+        `min_stable` consecutive polls (mirrors
+        wait_for_matches_iframe_to_complete's stabilization loop).
+
+        wait_for_blazor_idle() alone is NOT reliable here: __blazorIdle
+        isn't always detected in this particular frame (falls back to a
+        generic dom-quiet heuristic), which can report "settled" before a
+        checkbox/dropdown-triggered SignalR round-trip has actually
+        refreshed the grid - verified live: without this, a checkbox
+        toggle sometimes silently no-ops, leaving the default
+        "upcoming only" list in place.
+        """
+        rows = fl.locator("table.idealis-table tbody tr")
+        prev = -1
+        stable = 0
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            try:
+                n = rows.count()
+            except Exception:
+                n = -1
+            if n == prev:
+                stable += 1
+                if stable >= min_stable:
+                    return n
+            else:
+                stable = 0
+                prev = n
+            time.sleep(0.2)
+        log.warning("Kallelser table row count did not stabilize (last=%s)", prev)
+        return prev
+
+    def load_trainings_page(self, activity_type):
+        """Navigate to the 'Kallelser' tab and return the current row
+        locator, or None once every activity has been walked.
+
+        Unlike Matcher (classic ASP), Kallelser is rendered entirely inside
+        the Blazor #vpframe_1 iframe. There is also no series to walk
+        through: the whole filtered list is one flat sequence.
+
+        Both filters (checkbox + Typ) are re-verified and, if needed,
+        re-applied on EVERY call, not just the first - verified live: after
+        opening an activity's detail page and clicking "Kallelser" again to
+        come back, the SPA can silently revert to its defaults (checkbox
+        re-checked -> "upcoming only", Typ back to "Alla"). When that
+        happens mid-walk, row_idx keeps counting into whatever the reverted
+        list now shows at that position - a future, unrelated activity -
+        while curr_month_year is still whatever it was from the real "vår"
+        data, silently misattributing that activity to the wrong date. Row
+        count is likewise recomputed fresh every call rather than cached,
+        so a reversion is corrected immediately instead of compounding.
+        """
+        self.page.get_by_role("link", name="Kallelser").click()
+        frame = self.page.wait_for_selector("#vpframe_1").content_frame()
+        self.wait_for_blazor_idle(frame)
+        fl = self.page.frame_locator("#vpframe_1")
+        fl.locator("table.idealis-table").first.wait_for(timeout=20000)
+
+        # "Endast kommande aktiviteter" hides everything before today when
+        # checked; re-uncheck it any time it's found checked again.
+        checkboxes = fl.locator("input[type=checkbox]")
+        if checkboxes.count() > 0 and checkboxes.nth(0).is_checked():
+            if self.trainings_filter_set:
+                log.warning("Kallelser 'upcoming only' filter had reverted; re-unchecking")
+            checkboxes.nth(0).uncheck(force=True)
+            self._wait_kallelser_table_stable(fl)
+
+        # "Typ" dropdown (options: Alla/Träning/Match-Tävling/Övrigt/Möte/
+        # Flerdagsaktivitet) filters by activity type; matched by visible
+        # label so a caller-supplied --activity-type just works. Re-select
+        # any time it's found reverted to something else.
+        typ_select = fl.locator("select").nth(1)
+        current_typ = typ_select.evaluate("el => el.selectedOptions[0]?.textContent || ''")
+        if current_typ != activity_type:
+            if self.trainings_filter_set:
+                log.warning("Kallelser 'Typ' filter had reverted to %r; re-selecting %r",
+                            current_typ, activity_type)
+            typ_select.select_option(label=activity_type)
+            self._wait_kallelser_table_stable(fl)
+
+        self.row_count = fl.locator("table.idealis-table tbody tr").count()
+        if not self.trainings_filter_set:
+            log.info("training list: %d rows after filtering to type=%r",
+                     self.row_count, activity_type)
+            self.trainings_filter_set = True
+
+        if self.row_idx >= self.row_count:
+            log.info("all %d training rows done", self.row_count)
+            return None
+
+        return fl.locator("table.idealis-table tbody tr")
+
+    def parse_single_training(self, row):
+        """Open one training activity from the Kallelser list and harvest
+        the 'Kommer'/'Kommer ej' attendance tabs.
+
+        Returns (rows, "") where rows is a list of
+        [date, activity_id, activity_name, name, state, location, excused,
+        comment] (empty list for a skipped/out-of-range activity, None for
+        a non-activity row such as a month header). "excused" is always
+        written blank here - see the comment at its append site below.
+        """
+        cells = row.locator("td")
+        if cells.count() != 9:
+            return (None, "")
+
+        # column layout (confirmed live against Kallelser's Blazor grid):
+        # DATUM, TID, AKTIVITET, PLATS, SCHEMALAGD, KOMMER, KOMMER EJ,
+        # EJ SVARAT, [Visa button] - the same 9-cell shape as a match row,
+        # but month-header rows are ALSO 9 cells here (mostly empty), so
+        # cell count alone can't distinguish them; the Visa-button check
+        # below does that instead.
+        activity_name = cells.nth(2).inner_text().strip()
+        location = cells.nth(3).inner_text().strip()
+
+        if row.get_by_role("button", name="Visa").count() == 0:
+            return (None, "")
+
+        if self.expected_activity_name and activity_name != self.expected_activity_name:
+            # Verified live: type "Träning" is NOT always 1:1 with name
+            # "Träning" - inter-club friendlies ("X-Y randigt") and named
+            # sessions ("Ambitionsträning - Coerver") can share the type
+            # too. Per the user's definition ("activity type is Träning
+            # AND activity name is Träning"), only an exact name match
+            # counts as a training session to collect; log every mismatch
+            # so the exclusion stays auditable instead of silent.
+            log.warning("skipping activity named %r (type %r, expected name %r)",
+                        activity_name, self.activity_type, self.expected_activity_name)
+            self.run_flags.append("activity_type_name_mismatch")
+            return ([], "")
+
+        if self.curr_month_year is None:
+            log.warning("training activity %r appears before any month header; skipping",
+                        activity_name)
+            self.run_flags.append("month_header_missing")
+            return (None, "")
+
+        date_txt = cells.nth(0).inner_text().strip().rstrip("!").rstrip()
+        # "20 - sön" -> the day number; month/year come from the last header.
+        day_part = date_txt.split("-")[0].strip()
+        try:
+            date = self.curr_month_year.replace(day=int(day_part))
+        except ValueError:
+            log.warning("training activity %r: unparseable date %r; skipping",
+                        activity_name, date_txt)
+            self.run_flags.append("date_unparsed")
+            return (None, "")
+
+        if self.start_date and date < self.start_date:
+            return ([], "")
+        if self.end_date and date > self.end_date:
+            return ([], "")
+
+        try:
+            row.get_by_role("button", name="Visa").click(timeout=20000)
+        except PlaywrightTimeoutError:
+            log.error("training %r: 'Visa' click timed out; skipping", activity_name)
+            self.run_flags.append("visa_click_timeout")
+            return ([], "")
+
+        frame = self.page.wait_for_selector("#vpframe_1").content_frame()
+        self.wait_for_blazor_idle(frame)
+        fl = self.page.frame_locator("#vpframe_1")
+        try:
+            fl.locator("table.idealis-table").first.wait_for(timeout=15000)
+        except PlaywrightTimeoutError:
+            log.error("training %r: attendance table never appeared; skipping", activity_name)
+            self.run_flags.append("attendance_table_missing")
+            return ([], "")
+
+        # Kallelser only exposes the activity id in the detail page's URL
+        # (activityId=NNNN), unlike a match's visible matchid cell.
+        m = re.search(r"activityId=(\d+)", frame.url)
+        activity_id = int(m.group(1)) if m else f"{date.date().isoformat()}:{activity_name}"
+
+        # Verified live: __blazorIdle isn't reliably detected on this page,
+        # so wait_for_blazor_idle()/the table appearing are NOT proof the
+        # tab labels have their real counts yet - the very first activity
+        # opened in a run tends to be fine (it got a slower page transition
+        # incidentally), but every one after it can read a stale "(0/0)"
+        # Kommer label if harvested immediately. Poll the "Kommer" tab's
+        # own label until it matches the count the list row already showed
+        # (ground truth, read before navigating away above).
+        # Verified live: neither wait_for_blazor_idle() nor the attendance
+        # table appearing means the tab labels have their real "(N/M)"
+        # counts yet - the label (and the list's own aggregate cell) can
+        # sit at a transient "(0/0)"/"-" placeholder for a moment after
+        # navigation. Poll the "Kommer" label for stability (unchanged
+        # across 3 reads) rather than trusting the first read.
+        kommer_button = fl.get_by_role("button", name=re.compile(r"^Kommer \("))
+        prev_txt, stable, deadline = None, 0, time.time() + 8
+        while time.time() < deadline:
+            try:
+                txt = kommer_button.inner_text(timeout=1000)
+            except Exception as e:
+                txt = None
+                log.debug("training %s: kommer_button.inner_text() failed: %s", activity_id, e)
+            if txt and txt == prev_txt:
+                stable += 1
+                if stable >= 3:
+                    break
+            else:
+                stable = 0
+                prev_txt = txt
+            time.sleep(0.25)
+        else:
+            log.warning("training %s: Kommer tab label never stabilized "
+                        "(last seen %r); reading anyway", activity_id, prev_txt)
+            self.run_flags.append("tab_label_unstable")
+        log.debug("training %s: Kommer label after stability wait: %r", activity_id, prev_txt)
+
+        training_rows = []
+        for tab_label, tab_pat in self.TRAINING_TABS:
+            try:
+                t = self.read_tab(tab_pat, tab_label)
+            except PlaywrightTimeoutError as e:
+                log.error("training %s tab %s: %s", activity_id, tab_label, e)
+                self.run_flags.append("tab_read_timeout")
+                t = {"label_N": None, "label_M": None, "members": [],
+                     "leaders": [], "scroll_iters": 0, "flags": ["read_timeout"]}
+            for mem in t["members"]:
+                comment = ""
+                if tab_label == "Kommer ej":
+                    # Confirmed live: this tab's raw cells are
+                    # ["", year, name, kallad, läst, svarade, KOMMENTAR, ...].
+                    raw = mem.get("raw_cells") or []
+                    if len(raw) > 6:
+                        comment = raw[6]
+                # "excused" is blank at scrape time - a later, separate
+                # categorization step (classify_absences.py, manual or
+                # LLM-driven) fills it in as "ok"/"not" for Kommer-ej rows.
+                training_rows.append([date.date().isoformat(), activity_id,
+                                      activity_name, mem["name"], mem["state"],
+                                      location, "", comment])
+
+        parsed = {lbl: sum(1 for r in training_rows if r[4] == lbl)
+                  for lbl, _ in self.TRAINING_TABS}
+        log.info("training %s %s %-10s parsed=%s",
+                 activity_id, date.date(), activity_name, list(parsed.values()))
+
+        return (training_rows, "")
+
+    def collect_trainings(self, email, password, start_date, end_date,
+                           activity_type, activity_name=None, run_idx=1, max_matches=0):
+        """Run one full training-session scrape. Returns the list of
+        harvested CSV rows: [date, activity_id, activity_name, name, state,
+        location, excused, comment]."""
+        self.start_date = start_date
+        self.end_date = end_date
+        self.run_idx = run_idx
+        self.max_matches = max_matches
+        self.activity_type = activity_type
+        self.expected_activity_name = activity_name
+        self._match_n = 0
+        self.run_flags = []
+        self.curr_month_year = None
+        self.row_count = 0
+        self.row_idx = 0
+        self.trainings_filter_set = False
+
+        self._login(email, password)
+
+        rows = self.load_trainings_page(activity_type)
+
+        data = []
+        stuck_guard = 0
+        while rows is not None:
+            if self.row_idx > self.row_count + 5:
+                log.error("training row index %d exceeded row count %d "
+                          "without advancing; aborting", self.row_idx, self.row_count)
+                self.run_flags.append("row_walk_overrun")
+                break
+
+            row = rows.nth(self.row_idx)
+            self.row_idx += 1
+
+            cell_count = row.locator("td").count()
+            if cell_count != 9:
+                stuck_guard += 1
+                if stuck_guard > 50:
+                    log.error("50 consecutive unrecognised rows; aborting")
+                    self.run_flags.append("unrecognised_rows")
+                    break
+                continue
+
+            if row.get_by_role("button", name="Visa").count() == 0:
+                # Month-header (or otherwise non-activity) row - still 9
+                # <td>s in Kallelser's Blazor grid, unlike Matcher's 1-cell
+                # headers, so this is the discriminator instead of cell count.
+                txt = row.locator("td").first.inner_text().strip()
+                try:
+                    self.curr_month_year = datetime.strptime(txt, "%B %Y")
+                    log.debug("training: month header %r -> %s", txt, self.curr_month_year)
+                except ValueError:
+                    log.debug("training: unparsed month header %r (curr_month_year stays %s)",
+                              txt, self.curr_month_year)
+                stuck_guard = 0
+                continue
+
+            d, _ = self.parse_single_training(row)
+            if d is not None:
+                data.extend(d)
+                self._match_n += 1
+                if self.max_matches and self._match_n >= self.max_matches:
+                    log.info("stopping after --max-matches=%d", self.max_matches)
+                    break
+            # Activity detail navigation replaced the list; rebuild it.
+            rows = self.load_trainings_page(activity_type)
+            stuck_guard = 0
+
+        log.info("run %d: %d training rows harvested; run flags: %s",
+                 self.run_idx, len(data), self.run_flags or "none")
+        return data
+
     def close(self) -> None:
         self.context.close()
         self.browser.close()
@@ -903,7 +1232,26 @@ if __name__ == "__main__":
     ap.add_argument("--year", default=None,
                     help="Year to select in the Period dropdown (default: current year)")
     ap.add_argument("--series-pattern", default=None,
-                    help="Regex matched against series link names (e.g. vår)")
+                    help="Regex matched against series link names (e.g. vår). "
+                         "In --trainings mode this isn't used for navigation "
+                         "(Kallelser has no series concept) but still feeds "
+                         "the output filename scope, e.g. --series-pattern vår "
+                         "-> ..._vår_2026_training.csv")
+    ap.add_argument("--trainings", action="store_true",
+                    help="Scrape training sessions from the 'Kallelser' tab "
+                         "instead of matches from 'Matcher'. Writes a "
+                         "..._training.csv file. --activity-type/"
+                         "--activity-name apply only in this mode.")
+    ap.add_argument("--activity-type", default="Träning",
+                    help="Activity type to select on the Kallelser page "
+                         "(--trainings mode only; default: Träning)")
+    ap.add_argument("--activity-name", default="Träning",
+                    help="Expected activity name for the selected "
+                         "--activity-type (--trainings mode only; default: "
+                         "Träning) - every harvested activity is checked "
+                         "against this and a mismatch is logged as a "
+                         "warning, verifying the two are actually 1:1 "
+                         "rather than assuming it")
     ap.add_argument("--runs", type=int, default=1,
                     help="Scrape N times in one session; writes PREFIX.run{k}.csv "
                          "per run and a majority-merged PREFIX.csv")
@@ -920,6 +1268,10 @@ if __name__ == "__main__":
                     help="Stop after N matches (tuning aid; 0 = all)")
     ap.add_argument("--debug", action="store_true", help="Verbose logging")
     args = ap.parse_args()
+
+    if args.trainings and args.verify:
+        ap.error("--verify is not supported together with --trainings "
+                 "(sa_checks/verify_scrape are match-specific)")
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
@@ -949,6 +1301,8 @@ if __name__ == "__main__":
     else:
         base = load_settings().get("SCRAPER_OUTPUT", "").strip() or "sportadmin"
         prefix = "_".join([base] + scope_parts)
+    if args.trainings:
+        prefix += "_training"
     out_dir = os.path.dirname(prefix)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -965,9 +1319,14 @@ if __name__ == "__main__":
             for k in range(1, runs + 1):
                 if runs > 1:
                     log.info("=== run %d/%d ===", k, runs)
-                rows = sp.collect(email, password, start_date, end_date,
-                                  args.series_pattern, args.year, run_idx=k,
-                                  max_matches=args.max_matches)
+                if args.trainings:
+                    rows = sp.collect_trainings(email, password, start_date, end_date,
+                                                args.activity_type, args.activity_name,
+                                                run_idx=k, max_matches=args.max_matches)
+                else:
+                    rows = sp.collect(email, password, start_date, end_date,
+                                      args.series_pattern, args.year, run_idx=k,
+                                      max_matches=args.max_matches)
                 all_runs.append(rows)
                 _write_csv(f"{prefix}.run{k}.csv" if runs > 1 else f"{prefix}.csv", rows)
         except PlaywrightTimeoutError as e:
@@ -978,11 +1337,14 @@ if __name__ == "__main__":
             sp.close()
 
         if runs > 1 and all_runs:
-            merged, nondet = sa_checks.row_majority(all_runs)
+            if args.trainings:
+                merged, nondet = sa_checks.row_majority_training(all_runs)
+            else:
+                merged, nondet = sa_checks.row_majority(all_runs)
             _write_csv(f"{prefix}.csv", merged)
             if nondet:
                 exit_code = exit_code or 2
-                log.warning("%d non-deterministic (matchid,player) keys across %d runs",
+                log.warning("%d non-deterministic (id,player) keys across %d runs",
                             len(nondet), runs)
                 for nd in nondet[:20]:
                     log.warning("  nondeterministic: %s", nd)

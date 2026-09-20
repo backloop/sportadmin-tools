@@ -79,6 +79,26 @@ WebSocket) inside a cross-origin iframe and uses row virtualization.
 `wait_for_blazor_idle()` can tell when a render batch has settled; each tab is
 then scroll-harvested until every row is read.
 
+#### Training sessions (`--trainings`)
+`--trainings` switches the whole run to scrape training sessions from the
+"Kallelser" tab instead of matches from "Matcher" — writes
+`date,activity_id,activity_name,player_name,state,location,excused,comment`
+rows to `PREFIX_training.csv` (the `_training` suffix is always appended
+last, after any `--series-pattern`/`--year`/date scope, e.g.
+`sportadmin_vår_2026_training.csv`). Only `Kommer`/`Kommer ej` are
+collected (not `Ej svarat`/`Ej kallad`); for `Kommer ej` rows the member's
+free-text "Kommentar" is captured too. `excused` is always written blank
+by the scraper — see `classify_absences.py` below for how it gets filled in.
+
+`--activity-type`/`--activity-name` (both default `Träning`) select the
+"Typ" filter on the Kallelser page and the expected activity name. These are
+**not** always 1:1 in practice — a club can file inter-club friendlies or
+named sessions (e.g. "Ambitionsträning - Coerver") under the same activity
+*type* as plain training. Every activity whose type matches but whose name
+doesn't is skipped and logged as a warning, so the exclusion is auditable
+rather than silently assumed. `--verify` is not supported together with
+`--trainings` (the consistency-check machinery is match-specific).
+
 ### Verification
 
 `--verify` writes one JSON record per match to `PREFIX_verify.jsonl` with the

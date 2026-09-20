@@ -184,6 +184,65 @@ def match_flags(record):
     return flags
 
 
+def _majority_merge(runs, id_field="matchid", extra_specs=None):
+    """Shared majority-vote merge for both match and training rows.
+
+    Each row is [date, id, name2, name, state, location, ...extra] - i.e.
+    the first 6 fields always mean date/id/series-or-activity-name/player/
+    state/location. `extra_specs`, if given, is a list of (build, reduce)
+    pairs, one per additional trailing field in row order: build(row)
+    extracts that field from a raw row (or "" if the row is too short),
+    reduce(values) collapses everything seen for a given key across every
+    run into the one merged value - used so free-text/manually-edited
+    fields (a training's Kommentar, its "excused" marker) can be carried
+    through without affecting the unanimity check below, which is based on
+    `state` only.
+
+    Returns (merged_rows, nondeterministic) where nondeterministic lists
+    every (id, name) key whose state/presence isn't unanimous across runs.
+    """
+    from collections import Counter
+
+    extra_specs = extra_specs or []
+    n = len(runs)
+    # key -> list of (date, series/activity_name, state, location, *extra) per run
+    seen = {}
+    for run in runs:
+        run_keys = {}
+        for row in run:
+            date, rid, series, name, state = row[0], row[1], row[2], row[3], row[4]
+            location = row[5] if len(row) > 5 else ""
+            extras = tuple(build(row) for build, _ in extra_specs)
+            key = (str(rid), name)
+            run_keys.setdefault(key, []).append((date, series, state, location) + extras)
+        for key, vals in run_keys.items():
+            seen.setdefault(key, []).append(vals)
+
+    merged = []
+    nondeterministic = []
+    for key, per_run in sorted(seen.items()):
+        present = len(per_run)
+        states = [v[2] for run_vals in per_run for v in run_vals]
+        cnt = Counter(states)
+        top_state, top_n = cnt.most_common(1)[0]
+        # representative date/series/location (first seen)
+        date0, series0, _, location0 = per_run[0][0][:4]
+        unanimous = present == n and len(cnt) == 1 and all(len(v) == 1 for v in per_run)
+        if not unanimous:
+            nondeterministic.append({
+                id_field: key[0], "player": key[1],
+                "present_in_runs": present, "of_runs": n,
+                "states": dict(cnt),
+            })
+        row_out = [date0, int(key[0]) if key[0].isdigit() else key[0],
+                   series0, key[1], top_state, location0]
+        for i, (_, reduce_fn) in enumerate(extra_specs):
+            all_vals = [v[4 + i] for run_vals in per_run for v in run_vals]
+            row_out.append(reduce_fn(all_vals))
+        merged.append(row_out)
+    return merged, nondeterministic
+
+
 def row_majority(runs):
     """Merge N runs (each a list of [date, matchid, series, name, state,
     location] - location is optional, defaults to "" for older 5-field rows).
@@ -192,37 +251,26 @@ def row_majority(runs):
     dicts describing every (matchid, name) key whose (state) or presence is not
     unanimous across all runs.
     """
-    n = len(runs)
-    # key -> list of (date, series, state, location) per run it appeared in
-    seen = {}
-    for run in runs:
-        run_keys = {}
-        for row in run:
-            date, matchid, series, name, state = row[0], row[1], row[2], row[3], row[4]
-            location = row[5] if len(row) > 5 else ""
-            key = (str(matchid), name)
-            run_keys.setdefault(key, []).append((date, series, state, location))
-        for key, vals in run_keys.items():
-            seen.setdefault(key, []).append(vals)
+    return _majority_merge(runs, id_field="matchid")
 
-    merged = []
-    nondeterministic = []
-    for key, per_run in sorted(seen.items()):
-        present = len(per_run)
-        # flatten states
-        states = [v[2] for run_vals in per_run for v in run_vals]
-        from collections import Counter
-        cnt = Counter(states)
-        top_state, top_n = cnt.most_common(1)[0]
-        # representative date/series/location (first seen)
-        date0, series0, _, location0 = per_run[0][0]
-        unanimous = present == n and len(cnt) == 1 and all(len(v) == 1 for v in per_run)
-        if not unanimous:
-            nondeterministic.append({
-                "matchid": key[0], "player": key[1],
-                "present_in_runs": present, "of_runs": n,
-                "states": dict(cnt),
-            })
-        merged.append([date0, int(key[0]) if key[0].isdigit() else key[0],
-                       series0, key[1], top_state, location0])
-    return merged, nondeterministic
+
+def row_majority_training(runs):
+    """Merge N runs of 8-field training rows: [date, activity_id,
+    activity_name, name, state, location, excused, comment].
+
+    Majority-vote on `state` only, exactly like row_majority() - neither the
+    comment nor the "excused" marker (free text / manually or LLM-edited,
+    could legitimately differ or be re-typed between scrapes) ever counts
+    against unanimity. Both are merged as the first non-empty value seen
+    for that (activity_id, name) key across all runs.
+    """
+    def first_nonempty(vals):
+        for v in vals:
+            if v:
+                return v
+        return ""
+
+    return _majority_merge(runs, id_field="activity_id", extra_specs=[
+        (lambda row: row[6] if len(row) > 6 else "", first_nonempty),  # excused
+        (lambda row: row[7] if len(row) > 7 else "", first_nonempty),  # comment
+    ])
