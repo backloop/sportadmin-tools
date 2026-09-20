@@ -99,6 +99,31 @@ doesn't is skipped and logged as a warning, so the exclusion is auditable
 rather than silently assumed. `--verify` is not supported together with
 `--trainings` (the consistency-check machinery is match-specific).
 
+#### classify_absences.py
+An intermediate step between scraping and analysis, in two commands and
+with no API key or extra dependency required — classification is done by
+whichever LLM is driving the script (e.g. Claude Code itself, reading the
+export and judging each comment directly), not by a separate API call:
+
+    pipenv run python3 classify_absences.py export training.csv comments.json
+    # the LLM reads comments.json and writes classifications.json:
+    #     {"<id>": "ok"|"not"|"", ...}
+    pipenv run python3 classify_absences.py apply training.csv classifications.json
+
+`export` collects every un-reviewed `Kommer ej` row with a comment (blank
+`excused`) into a JSON file, one `{id, date, player, comment}` per row.
+Each `id` should then be classified `ok` (illness, injury, or a
+conflicting organized activity — an excused absence), `not` (travel, a
+social event, or another discretionary reason), or `""` if genuinely
+unclear — leaving it for a human to decide (`excused` is a plain CSV
+field, editable by hand with no script needed either way). `apply` writes
+those classifications back into the CSV. Already-classified rows are
+never re-exported, so it's safe to run export+apply again after scraping
+new sessions — only what's new comes up.
+
+`excused == "ok"` rows are what the analyzer's "adjusted" attendance curve
+credits as attendance — see below.
+
 ### Verification
 
 `--verify` writes one JSON record per match to `PREFIX_verify.jsonl` with the
@@ -148,9 +173,12 @@ next to the script, e.g.:
 
     HOME_LOCATIONS="<location1>","<location2>"
 
-and `--out-dir DIR` (output directory for the network graph HTML; default:
+`--out-dir DIR` (output directory for the network graph HTML; default:
 `ANALYZER_OUT_DIR` from `.settings`, or the current directory if unset;
-the directory is created if missing).
+the directory is created if missing), and `--weekdays LIST` (comma-
+separated Swedish abbreviations, e.g. `mån,ons`; restricts which weekdays'
+*training* sessions count toward the attendance-trend report below — it
+has no effect on the match-based reports).
 
 It also writes an HTML file into that directory, named after the input CSV
 (e.g. `sportadmin_vår_2025.csv` -> `sportadmin_vår_2025.html`): an
@@ -165,11 +193,37 @@ series, and double-booked weeks — the same data as the three console
 reports above, rendered as bar tables. Open the file directly in a
 browser; it needs no server.
 
+#### Training attendance trend
+If `INPUT`'s directory also has a sibling `..._training.csv` (as written by
+`sportadmin_scraper.py --trainings`, e.g. `sportadmin_vår_2025.csv` ->
+`sportadmin_vår_2025_training.csv`), it's picked up automatically — no flag
+needed — and adds one more console report plus a chart panel in the HTML
+page: a glidande (sliding) 8-week average of each player's training
+"Kommer" rate, one point per calendar week. The rate for a given week's
+window is `(that player's Kommer count in the trailing 8 weeks) / (every
+training session that actually happened in those 8 weeks)` — the same
+denominator for every player, so a player absent from Kallelser for a
+whole window shows 0%, not blank (a window with zero sessions at all shows
+blank).
+
+There are two curves, with a legend on the HTML page: the raw rate
+("Kommer", blue), and an **adjusted** rate (red) that also credits
+`Kommer ej` rows marked `excused == "ok"` (see `classify_absences.py`
+above) as attendance — always >= the raw rate, and identical to it until
+something's been marked excused. The console report's sparkline and
+printed percentage track the *adjusted* rate (so it reads the same as the
+HTML chart's rightmost value); the HTML page draws the raw rate as a blue
+line and — only once it actually differs — the adjusted rate as a red
+line layered on top of it, name left / chart center / latest (adjusted)
+value right, with a gap in either line wherever a week had no data rather
+than interpolating across it.
+
 ### generate_index.py
 Builds `index.html` in the analyzer's output directory: a horizontal tab
 bar with one tab per `sportadmin_analyzer.py` output file found there
-(labeled from each file's `<title>`), switching an iframe between them.
-Re-run it after adding/removing analyzer output to refresh the tab list.
+(labeled `"<season> <year>"`, parsed from the filename), switching an
+iframe between them. Re-run it after adding/removing analyzer output to
+refresh the tab list.
 
     pipenv run python3 generate_index.py
 
@@ -299,4 +353,26 @@ Player_43                                                            A1         
 Player_44                                                                  B3                                                                        
 Player_45                                                                  B3                      A1                                                
 =====================================================================================================================================================
+```
+
+Only printed when a sibling `_training.csv` was found (trend/last value
+here are the adjusted, "red curve" rate — identical to the raw rate since
+nothing in this sample has been marked excused yet):
+
+```
+=================================
+Glidande 8-veckors snitt av
+träningsnärvaro ("Kommer") per
+spelare, vecka för vecka. Andelen
+räknas mot samtliga träningar som
+faktiskt genomfördes under
+fönstret.
+
+player name      trend last value
+  Player_01 ██████████       100%
+  Player_06 █▅▆▆▇▇▇▇▇█       100%
+  Player_31 ██████████       100%
+  Player_41 ███▆▇▆▅▅▅▄        38%
+  Player_10 ▁▅▃▅▄▃▃▃▄▃        25%
+=================================
 ```

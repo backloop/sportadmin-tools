@@ -30,10 +30,39 @@ class NoMatchingSeasonError(Exception):
 
 def resolve_input_files(path):
     """Accept either a single CSV path or a directory - in the latter case,
-    every *.csv file directly inside it is analyzed in turn."""
+    every *.csv file directly inside it is analyzed in turn. A *_training.csv
+    file is never treated as a primary input (7-column schema, no season
+    marker of its own) - it's only ever consumed via training_sibling_path()
+    when its plain-match counterpart is analyzed."""
     if os.path.isdir(path):
-        return sorted(glob.glob(os.path.join(path, "*.csv")))
+        return sorted(f for f in glob.glob(os.path.join(path, "*.csv"))
+                      if not f.endswith("_training.csv"))
     return [path]
+
+
+def training_sibling_path(csv_path):
+    """sportadmin_vår_2025.csv -> sportadmin_vår_2025_training.csv (same dir)."""
+    stem, ext = os.path.splitext(csv_path)
+    return stem + "_training" + ext
+
+
+WEEKDAY_MAP = {"mån": 0, "tis": 1, "ons": 2, "tor": 3, "fre": 4, "lör": 5, "sön": 6}
+
+
+def parse_weekdays(spec):
+    """None -> None (no filter). 'mån,ons' -> {0, 2}. Comma-separated,
+    case-insensitive, whitespace-trimmed 3-letter Swedish abbreviations.
+    Raises ValueError naming the bad token if one isn't recognized."""
+    if not spec:
+        return None
+    days = set()
+    for token in spec.split(","):
+        key = token.strip().lower()
+        if key not in WEEKDAY_MAP:
+            raise ValueError(f"unrecognized weekday {token.strip()!r} "
+                             f"(expected one of: {', '.join(WEEKDAY_MAP)})")
+        days.add(WEEKDAY_MAP[key])
+    return days
 
 
 def detect_seasons(filename):
@@ -64,6 +93,7 @@ class SportadminGamesAnalyzer:
 
     def __init__(self, args):
         self.args = args
+        self.training_df = None
 
     def pretty_print(self, df, show_index, description):
 
@@ -153,7 +183,10 @@ class SportadminGamesAnalyzer:
                 data.append(row)
 
             #header = ["date", "match number", "series name", "player name", "ReportState", "available", "not available", "not reported", "coming", "not coming", "not answered"]
-            header = ["date", "match number", "series name", "player name", "report state", "location"]
+            # "date_str" (not "date" - the parsed datetime prepended below
+            # already claims that name; a duplicate column label would make
+            # df["date"] return a DataFrame instead of a Series).
+            header = ["date_str", "match number", "series name", "player name", "report state", "location"]
             header.insert(0, "date")
             header.insert(1, "week")
             header.insert(2, "ReportState")
@@ -198,21 +231,80 @@ class SportadminGamesAnalyzer:
         self.df = pd.DataFrame(data, columns = header)
         #print(df.describe())
 
-        if self.args.obfuscate:
-            # Get unique player names
-            unique_players = self.df['player name'].unique()
 
-            # Create a mapping from actual player names to obfuscated names
-            player_mapping = {name: f"Player_{i+1:02d}" for i, name in enumerate(unique_players)}
+    def load_training(self, filename):
+        """Parse a training-session CSV (8 fields: date, activity_id,
+        activity_name, player_name, state, location, excused, comment -
+        written by sportadmin_scraper.py --trainings) into self.training_df.
+        "excused" is blank until a separate categorization step
+        (classify_absences.py, manual or LLM-driven) marks a "Kommer ej"
+        row "ok"/"not"; a bare 7-field row (pre-"excused" schema) is still
+        accepted, with excused defaulting to "".
 
-            # Apply the mapping to the 'player name' column
-            self.df['player name'] = self.df['player name'].map(player_mapping)
+        --weekdays is applied here and only here: it narrows which training
+        sessions count toward the sliding-average attendance report,
+        without touching the match-based reports in self.df."""
+        weekday_set = getattr(self.args, "weekday_set", None)
+
+        rows = []
+        with open(filename, newline='') as csvfile:
+            reader = csv.reader(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
+            for row in reader:
+                if len(row) == 7:
+                    date_str, activity_id, activity_name, name, state, location, comment = row
+                    excused = ""
+                else:
+                    if len(row) < 8:
+                        row = row + [""] * (8 - len(row))
+                    date_str, activity_id, activity_name, name, state, location, excused, comment = row[:8]
+                date = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+                iso_year, iso_week, iso_weekday = date.isocalendar()
+                weekday = iso_weekday - 1  # 0=Monday, matching WEEKDAY_MAP
+                if weekday_set is not None and weekday not in weekday_set:
+                    continue
+                rows.append([date, date_str, iso_year, iso_week, weekday,
+                            activity_id, activity_name, name, state, location,
+                            excused, comment])
+
+        columns = ["date", "date_str", "iso_year", "iso_week", "weekday",
+                   "activity_id", "activity_name", "player name", "state",
+                   "location", "excused", "comment"]
+        self.training_df = pd.DataFrame(rows, columns=columns)
+
+        # Soft sanity check, not a hard failure — catches an accidentally
+        # mismatched sibling file (e.g. a stale training CSV left behind
+        # after re-scraping the match CSV for a different date range).
+        if getattr(self, "df", None) is not None and len(self.training_df):
+            match_min, match_max = self.df["date"].min(), self.df["date"].max()
+            train_min, train_max = self.training_df["date"].min(), self.training_df["date"].max()
+            if train_max < match_min or train_min > match_max:
+                print(f"WARNING: training data ({train_min.date()}..{train_max.date()}) "
+                      f"doesn't overlap the match data ({match_min.date()}..{match_max.date()})")
+
+
+    def _apply_obfuscation(self):
+        """Replace real player names with Player_NN everywhere, using ONE
+        mapping shared across self.df and self.training_df (if loaded) so
+        the same person gets the same alias in both reports."""
+        if not self.args.obfuscate:
+            return
+        names = pd.concat([
+            self.df['player name'],
+            self.training_df['player name'] if self.training_df is not None else pd.Series(dtype=str),
+        ]).unique()
+        mapping = {name: f"Player_{i+1:02d}" for i, name in enumerate(names)}
+        self.df['player name'] = self.df['player name'].map(mapping)
+        if self.training_df is not None:
+            self.training_df['player name'] = self.training_df['player name'].map(mapping)
+
 
     def analyze(self):
 
         self.played_distribution()
         self.available_distribution()
         self.played_multiples()
+        if self.training_df is not None:
+            self.training_attendance_trend()
         self.play_network()
 
 
@@ -283,7 +375,172 @@ class SportadminGamesAnalyzer:
             "multiples_table": self._multiples_table((ReportState.CALLED_COMING,)),
         }
 
+        training_trend = self._build_training_trend_json()
+        if training_trend is not None:
+            network_data["training_trend"] = training_trend
+
         self._write_play_network_html(network_data)
+
+
+    # ~2 months of trailing weekly training sessions (single source of
+    # truth like CLIQUE_K, emitted into the HTML data as "window_weeks").
+    TRAINING_ROLLING_WEEKS = 8
+
+    @staticmethod
+    def _iso_week_axis(start_date, end_date):
+        """Continuous list of (iso_year, iso_week) tuples, one per calendar
+        week, from start_date's week through end_date's week inclusive -
+        so a week with zero training sessions (e.g. a holiday break) still
+        gets its own entry rather than being silently skipped."""
+        weeks = []
+        cur = start_date - datetime.timedelta(days=start_date.weekday())
+        last_monday = end_date - datetime.timedelta(days=end_date.weekday())
+        while cur <= last_monday:
+            weeks.append(cur.isocalendar()[:2])
+            cur += datetime.timedelta(days=7)
+        return weeks
+
+    def _weekly_attendance_rates(self):
+        """Return (weeks, rate_df, adjusted_rate_df): `weeks` is the
+        continuous (iso_year, iso_week) axis covering self.training_df's
+        full date range; both DataFrames have one row per week in `weeks`
+        and one column per player, sharing the same denominator - every
+        training session that actually occurred in the
+        TRAINING_ROLLING_WEEKS-trailing window, the same for every player
+        in a given window:
+
+        - rate_df ("blue"): (their "Kommer" count in the window) / denominator * 100.
+        - adjusted_rate_df ("red"): (Kommer count + "Kommer ej" rows they
+          were excused for, i.e. excused == "ok") / denominator * 100 -
+          always >= rate_df, since it only ever credits more sessions.
+
+        A window with zero sessions at all is NaN in both; a window with
+        sessions the player has no rows in is 0%, not NaN (they attended
+        none of what happened)."""
+        df = self.training_df
+        weeks = self._iso_week_axis(df["date"].min(), df["date"].max())
+
+        sessions = df.drop_duplicates("activity_id").groupby(["iso_year", "iso_week"]).size()
+        sessions_per_week = pd.Series([int(sessions.get(w, 0)) for w in weeks], index=weeks)
+
+        players = sorted(df["player name"].unique())
+
+        def counts_by_week_player(filtered):
+            counts = filtered.groupby(["iso_year", "iso_week", "player name"]).size()
+            return pd.DataFrame(
+                {p: [int(counts.get((y, w, p), 0)) for (y, w) in weeks] for p in players},
+                index=weeks)
+
+        kommer_per_player_week = counts_by_week_player(df[df["state"] == "Kommer"])
+        excused_per_player_week = counts_by_week_player(
+            df[(df["state"] == "Kommer ej") & (df["excused"] == "ok")])
+        adjusted_per_player_week = kommer_per_player_week + excused_per_player_week
+
+        rolling_sessions = sessions_per_week.rolling(self.TRAINING_ROLLING_WEEKS, min_periods=1).sum()
+
+        def rolling_rate(counts_df):
+            rolling_counts = counts_df.rolling(self.TRAINING_ROLLING_WEEKS, min_periods=1).sum()
+            rate = rolling_counts.div(rolling_sessions, axis=0) * 100
+            return rate.where(rolling_sessions > 0)
+
+        rate_df = rolling_rate(kommer_per_player_week)
+        adjusted_rate_df = rolling_rate(adjusted_per_player_week)
+        return weeks, rate_df, adjusted_rate_df
+
+    def training_attendance_trend(self):
+        """Console report: one row per player - name, a block-character
+        sparkline of the rolling attendance rate over every observed week,
+        and the latest window's value. Both the sparkline and "last value"
+        track the ADJUSTED ("red") rate - Kommer plus excused==\"ok\"
+        Kommer-ej - which is >= the raw Kommer rate and becomes identical
+        to it once nothing has been marked excused. Same pretty_print()/
+        DataFrame-of-rendered-strings idiom as distribution_by_series()'s
+        ASCII bars."""
+        weeks, rate_df, adjusted_rate_df = self._weekly_attendance_rates()
+        if not weeks:
+            return
+
+        blocks = "▁▂▃▄▅▆▇█"
+        def sparkline(values):
+            chars = []
+            for v in values:
+                if pd.isna(v):
+                    chars.append(" ")
+                else:
+                    level = min(7, max(0, round(v / 100 * 7)))
+                    chars.append(blocks[level])
+            return "".join(chars)
+
+        rows = []
+        for player in adjusted_rate_df.columns:
+            series = adjusted_rate_df[player]
+            last = series.iloc[-1]
+            rows.append({
+                "player name": player,
+                "trend": sparkline(series.tolist()),
+                "last value": f"{last:.0f}%" if pd.notna(last) else "-",
+                "_sort": last if pd.notna(last) else -1,
+            })
+        out_df = pd.DataFrame(rows).sort_values(
+            ["_sort", "player name"], ascending=[False, True]).drop(columns="_sort")
+
+        weekday_note = ""
+        weekday_set = getattr(self.args, "weekday_set", None)
+        if weekday_set:
+            inv = {v: k for k, v in WEEKDAY_MAP.items()}
+            weekday_note = (" Endast " + ", ".join(inv[d] for d in sorted(weekday_set))
+                            + "-träningar är medräknade.")
+
+        self.pretty_print(out_df, False, f"""
+                          Glidande {self.TRAINING_ROLLING_WEEKS}-veckors snitt av
+                          träningsnärvaro ("Kommer") per spelare, vecka för
+                          vecka. Andelen räknas mot samtliga träningar som
+                          faktiskt genomfördes under fönstret.
+                          {weekday_note}
+                          """)
+
+    def _build_training_trend_json(self):
+        """JSON-friendly equivalent of training_attendance_trend(), for the
+        HTML/SVG chart. None if no training data was loaded. Each row
+        carries both curves: "values"/"last" (raw Kommer rate, drawn blue)
+        and "adjusted_values"/"adjusted_last" (Kommer + excused=="ok"
+        Kommer-ej, drawn red on top) - the adjusted fields are omitted
+        entirely when identical to the raw ones (nothing has been marked
+        excused yet), so the chart draws only one line until they diverge."""
+        if self.training_df is None or self.training_df.empty:
+            return None
+        weeks, rate_df, adjusted_rate_df = self._weekly_attendance_rates()
+        if not weeks:
+            return None
+
+        week_labels = [f"{y}-W{w:02d}" for (y, w) in weeks]
+        rows = []
+        for player in rate_df.columns:
+            values = [None if pd.isna(v) else round(float(v), 1) for v in rate_df[player]]
+            adjusted_values = [None if pd.isna(v) else round(float(v), 1)
+                              for v in adjusted_rate_df[player]]
+            last = next((v for v in reversed(values) if v is not None), None)
+            adjusted_last = next((v for v in reversed(adjusted_values) if v is not None), None)
+            row = {"player": player, "values": values, "last": adjusted_last}
+            if adjusted_values != values:
+                row["adjusted_values"] = adjusted_values
+                row["adjusted_last"] = adjusted_last
+                row["raw_last"] = last
+            rows.append(row)
+        rows.sort(key=lambda r: (-(r["last"] if r["last"] is not None else -1), r["player"]))
+
+        weekday_set = getattr(self.args, "weekday_set", None)
+        weekdays = None
+        if weekday_set:
+            inv = {v: k for k, v in WEEKDAY_MAP.items()}
+            weekdays = [inv[d] for d in sorted(weekday_set)]
+
+        return {
+            "window_weeks": self.TRAINING_ROLLING_WEEKS,
+            "weekdays": weekdays,
+            "weeks": week_labels,
+            "rows": rows,
+        }
 
 
     def _multiples_table(self, states):
@@ -528,9 +785,22 @@ if __name__ == "__main__":
                               "data in the file is analyzed together.")
     parser.add_argument('--list', action="store_true",
                          help="List the seasons present in the input CSV and exit")
+    parser.add_argument('--weekdays', metavar="LIST", default=None,
+                         help="Comma-separated Swedish weekday abbreviations "
+                              "(mån,tis,ons,tor,fre,lör,sön; case-insensitive, "
+                              "whitespace trimmed) restricting which weekdays' "
+                              "training sessions count toward the sliding-"
+                              "average attendance report. Applies ONLY to "
+                              "that report, never to the match-based ones. "
+                              "Default: every weekday.")
 
     # Parse the arguments
     args = parser.parse_args()
+
+    try:
+        args.weekday_set = parse_weekdays(args.weekdays)
+    except ValueError as e:
+        parser.error(str(e))
 
     input_files = resolve_input_files(args.input)
     if not input_files:
@@ -570,6 +840,12 @@ if __name__ == "__main__":
                 print(f"WARNING: {e}; skipping")
                 continue
             raise SystemExit(f"ERROR: {e}")
+
+        training_path = training_sibling_path(csv_path)
+        if os.path.exists(training_path):
+            sp.load_training(training_path)
+
+        sp._apply_obfuscation()
         sp.analyze()
         analyzed += 1
 
