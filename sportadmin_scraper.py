@@ -363,6 +363,265 @@ class SportadminGamesScraper:
                 return f
         return None
 
+    def _printa_frame_synced(self):
+        """Like _printa_frame(), but first nudges vpframe_3 - a Playwright
+        quirk confirmed live on the Närvaro pages: the nested cross-origin
+        "printa" iframe inside vpframe_3 doesn't register as a Playwright
+        child frame until something forces a sync on vpframe_3 (a plain
+        wait is not enough, even once printa's <iframe> tag already exists
+        in vpframe_3's HTML)."""
+        for f in self.page.frames:
+            if f.name == "vpframe_3":
+                try:
+                    f.content()
+                except Exception:
+                    pass
+                break
+        return self._printa_frame()
+
+    def _retry(self, fn, tries=10, delay=1.0):
+        """Retry `fn` (a zero-arg callable that re-fetches whatever frame/
+        locator it needs internally) across the printa frame's habit of
+        detaching after every navigation - classic-ASP race also worked
+        around elsewhere in this file."""
+        last_err = None
+        for _ in range(tries):
+            try:
+                return fn()
+            except Exception as e:
+                last_err = e
+                time.sleep(delay)
+        raise last_err
+
+    def _goto_narvaro_report(self):
+        """Navigate to Närvaro -> 'Rapportera närvaro' and return the printa
+        frame once it has actually loaded narvaro_IFRAME.asp. Confirmed live:
+        clicking 'Närvaro' alone can transiently land on start/default.asp;
+        the sub-tab click is required too."""
+        self.page.get_by_role("link", name="Närvaro").click()
+        time.sleep(1.5)
+        try:
+            self.page.get_by_role("link", name="Rapportera närvaro").click(timeout=8000)
+        except PlaywrightTimeoutError:
+            log.debug("'Rapportera närvaro' sub-tab click timed out (may already be active)")
+
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            frame = self._printa_frame_synced()
+            if frame is not None and "narvaro_IFRAME.asp" in frame.url:
+                try:
+                    frame.wait_for_load_state("domcontentloaded", timeout=3000)
+                    return frame
+                except Exception:
+                    pass
+            else:
+                log.debug("waiting for narvaro_IFRAME.asp; printa frame url=%r",
+                          frame.url if frame else None)
+            time.sleep(0.5)
+        raise RuntimeError("could not reach Närvaro 'Rapportera närvaro' report")
+
+    def _select_narvaro_group(self, year):
+        """Select the grupp_pk option whose label contains `year` (mirrors
+        set_period_dropdown's pattern for Matcher); a no-op if it's already
+        selected, which is the common case (the current season's group is
+        the default)."""
+        def _do():
+            f = self._printa_frame_synced()
+            sel = f.locator("select#grupp_pk, select[name='grupp_pk']")
+            sel.wait_for(timeout=5000)
+            options = sel.locator("option")
+            target_label = None
+            current_label = None
+            for i in range(options.count()):
+                opt = options.nth(i)
+                label = opt.inner_text()
+                if opt.get_attribute("selected") is not None:
+                    current_label = label
+                if str(year) in label:
+                    target_label = label
+            if target_label is None:
+                log.warning("no Närvaro grupp option matched year %r; keeping "
+                            "current selection %r", year, current_label)
+                return
+            if target_label == current_label:
+                return
+            log.info("Närvaro grupp -> %r", target_label)
+            sel.select_option(label=target_label)
+            time.sleep(1.5)
+        self._retry(_do)
+
+    _NARVARO_MONTH_IDX = {
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "maj": 5, "jun": 6,
+        "jul": 7, "aug": 8, "sep": 9, "okt": 10, "nov": 11, "dec": 12,
+    }
+
+    # One evaluate() per Närvaro page - confirmed live DOM shape:
+    #  - td.kort4: month header cells (colspan groups; abbreviated 3-letter
+    #    or full Swedish names depending on how many days are in the group).
+    #  - td.kort3[id]: day-number header cells, id="a<activityid>".
+    #  - td.kort5: the time+type row, same column count/order as the
+    #    day-number row within one page; title (own or on a nested [title]
+    #    element) is the Swedish activity type.
+    #  - td[onmouseover^="aOn("]: per-player presence cells, carrying both
+    #    the activity id and member id directly (no positional alignment
+    #    needed); present iff the inline style contains #CCFFCC. Cells for
+    #    LOK-subsidy-excluded (activity, player) pairs have no onmouseover
+    #    at all and are skipped (no data, not absent).
+    #  - td[id^="m"]: the frozen name column, id="m<memberid>".
+    _NARVARO_PAGE_JS = r"""() => {
+        const months = [...document.querySelectorAll('td.kort4')].map(td => ({
+            name: (td.innerText || '').trim(),
+            colspan: parseInt(td.getAttribute('colspan') || '1', 10),
+        }));
+
+        // A not-yet-confirmed "in progress" activity column renders
+        // per-player checkbox cells with ids like "box<activityid>_<member
+        // id>_..." (also class="kort3") instead of the normal read-only
+        // presence markup - excluded by requiring the id to start with "a"
+        // (confirmed live: box... ids never do). An unscheduled placeholder
+        // column renders id="a" with no digits - kept as a real column (its
+        // day/activity_id both parse to NaN, resolved by the Python-side
+        // skip-on-unparseable-date path) so column position stays aligned
+        // with the time+type row and the month-header colspans.
+        const dayCells = [...document.querySelectorAll('td.kort3[id^="a"]')];
+        const timeCells = [...document.querySelectorAll('td.kort5')];
+        const columns = dayCells.map((td, i) => {
+            const aid = parseInt(td.id.slice(1), 10);
+            const day = parseInt((td.innerText || '').trim(), 10);
+            const timeTd = timeCells[i];
+            let time = '', type = '';
+            if (timeTd) {
+                const txt = (timeTd.innerText || '').trim();
+                if (txt.length >= 3) time = txt.slice(0, -2) + ':' + txt.slice(-2);
+                type = timeTd.getAttribute('title') || '';
+                if (!type) {
+                    const el = timeTd.querySelector('[title]');
+                    if (el) type = el.getAttribute('title') || '';
+                }
+            }
+            return { activity_id: aid, day: day, time: time, type: type };
+        });
+
+        const members = {};
+        for (const td of document.querySelectorAll('td[id^="m"]')) {
+            const a = td.querySelector('a');
+            if (a) members[td.id.slice(1)] = (a.textContent || '').trim();
+        }
+
+        const presence = [];
+        for (const td of document.querySelectorAll('td[onmouseover^="aOn("]')) {
+            const m = /aOn\(a(\d+),m(\d+),/.exec(td.getAttribute('onmouseover') || '');
+            if (!m) continue;
+            const name = members[m[2]];
+            if (!name) continue;
+            presence.push({
+                activity_id: parseInt(m[1], 10),
+                player_name: name,
+                present: (td.getAttribute('style') || '').includes('CCFFCC'),
+            });
+        }
+
+        return { months, columns, presence };
+    }"""
+
+    def _narvaro_page_data(self):
+        def _do():
+            f = self._printa_frame_synced()
+            return f.evaluate(self._NARVARO_PAGE_JS)
+        return self._retry(_do)
+
+    def collect_narvaro(self, year, activity_name):
+        """Scrape actual attendance from Närvaro -> 'Rapportera närvaro',
+        restricted to columns tagged with `activity_name` and to
+        self.start_date/self.end_date. Cross-referencing against Kallelser
+        training rows happens at analysis time by date, not here - the two
+        systems use disjoint activity-id namespaces (confirmed live).
+        Returns [date, activity_id, player_name, "present"|"absent"] rows."""
+        self._goto_narvaro_report()
+        self._select_narvaro_group(year)
+
+        rows = []
+        curr_year = int(year)
+        prev_month_idx = None
+        prev_fingerprint = None
+        offset = 0
+        while offset < 60:
+            def _goto(offset=offset):
+                f = self._printa_frame_synced()
+                f.goto(re.sub(r"offset=\d+", f"offset={offset}", f.url))
+            self._retry(_goto)
+            time.sleep(1.0)
+
+            page_data = self._narvaro_page_data()
+            columns = page_data.get("columns", [])
+            months = page_data.get("months", [])
+            presence = page_data.get("presence", [])
+
+            # Unscheduled placeholder columns carry a NaN activity_id, and
+            # NaN never compares equal to itself - excluded here, or the
+            # repeat check below could never fire once any page has one.
+            real_ids = [c["activity_id"] for c in columns if c["activity_id"] == c["activity_id"]]
+            fingerprint = tuple(sorted(real_ids))
+            if fingerprint == prev_fingerprint:
+                log.debug("narvaro offset=%d repeats the previous page; "
+                          "last page reached", offset)
+                break
+            prev_fingerprint = fingerprint
+
+            month_per_col = []
+            for g in months:
+                month_per_col.extend([g["name"]] * max(1, g.get("colspan", 1)))
+            if len(month_per_col) != len(columns):
+                log.warning("narvaro offset=%d: month-header width %d != "
+                            "column count %d; date attribution may be off",
+                            offset, len(month_per_col), len(columns))
+
+            activity_dates = {}
+            for i, col in enumerate(columns):
+                month_name = month_per_col[i] if i < len(month_per_col) else None
+                if not month_name:
+                    continue
+                if month_name.strip() == "-":
+                    continue  # unscheduled placeholder column - expected, not a warning
+                month_idx = self._NARVARO_MONTH_IDX.get(month_name.strip()[:3].lower())
+                if month_idx is None:
+                    log.warning("narvaro: unrecognised month label %r; "
+                                "skipping column", month_name)
+                    continue
+                if prev_month_idx is not None and month_idx < prev_month_idx:
+                    curr_year += 1
+                prev_month_idx = month_idx
+
+                if col["type"] != activity_name:
+                    continue
+                try:
+                    date = datetime(curr_year, month_idx, col["day"])
+                except (ValueError, TypeError):
+                    continue
+                if self.start_date and date < self.start_date:
+                    continue
+                if self.end_date and date > self.end_date:
+                    continue
+                activity_dates[col["activity_id"]] = date
+
+            for p in presence:
+                date = activity_dates.get(p["activity_id"])
+                if date is None:
+                    continue
+                rows.append([date.date().isoformat(), p["activity_id"], p["player_name"],
+                            "present" if p["present"] else "absent"])
+
+            offset += 1
+        else:
+            log.error("narvaro pagination did not terminate within 60 pages; aborting")
+
+        if not rows:
+            log.warning("no Närvaro rows matched activity_name=%r; check the "
+                        "site's activity-type vocabulary against --activity-name",
+                        activity_name)
+        log.info("collected %d Närvaro presence rows", len(rows))
+        return rows
+
     def _matches_fingerprint(self):
         f = self._printa_frame()
         if f is None:
@@ -1301,6 +1560,7 @@ if __name__ == "__main__":
     else:
         base = load_settings().get("SCRAPER_OUTPUT", "").strip() or "sportadmin"
         prefix = "_".join([base] + scope_parts)
+    narvaro_prefix = prefix  # sibling to _training, not chained after it
     if args.trainings:
         prefix += "_training"
     out_dir = os.path.dirname(prefix)
@@ -1329,6 +1589,13 @@ if __name__ == "__main__":
                                       max_matches=args.max_matches)
                 all_runs.append(rows)
                 _write_csv(f"{prefix}.run{k}.csv" if runs > 1 else f"{prefix}.csv", rows)
+
+                if args.trainings and k == 1:
+                    # Actual attendance, not subject to the live-tab-race
+                    # flakiness --runs exists for - scraped once regardless
+                    # of --runs N.
+                    narvaro_rows = sp.collect_narvaro(args.year, args.activity_name)
+                    _write_csv(f"{narvaro_prefix}_narvaro.csv", narvaro_rows)
         except PlaywrightTimeoutError as e:
             log.error("PlaywrightTimeoutError: %s", e)
             traceback.print_exc()

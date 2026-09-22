@@ -99,6 +99,18 @@ doesn't is skipped and logged as a warning, so the exclusion is auditable
 rather than silently assumed. `--verify` is not supported together with
 `--trainings` (the consistency-check machinery is match-specific).
 
+`--trainings` also scrapes actual attendance from the separate "Närvaro" ->
+"Rapportera närvaro" grid (the coach's real, ground-truth presence marks —
+distinct from the self-reported "Kommer"/"Kommer ej" above), writing
+`date,activity_id,player_name,state` (`state` is `present` or `absent`) to
+`PREFIX_narvaro.csv` — a sibling to, not chained after, `PREFIX_training.csv`
+(e.g. `sportadmin_vår_2026_narvaro.csv`). This runs automatically, once per
+invocation regardless of `--runs N` (it's a single read of already
+coach-confirmed data, not subject to the live-tab-race flakiness `--runs`
+exists for elsewhere). Its `activity_id` is a different id namespace than
+the training CSV's — the two are only ever cross-referenced by date, at
+analysis time (see "Training attendance trend" below).
+
 #### classify_absences.py
 An intermediate step between scraping and analysis, in two commands and
 with no API key or extra dependency required — classification is done by
@@ -121,8 +133,8 @@ those classifications back into the CSV. Already-classified rows are
 never re-exported, so it's safe to run export+apply again after scraping
 new sessions — only what's new comes up.
 
-`excused == "ok"` rows are what the analyzer's "adjusted" attendance curve
-credits as attendance — see below.
+`excused == "ok"` rows are what the analyzer's "Närvaro+ursäkt" attendance
+curve credits as attendance on top of actual Närvaro presence — see below.
 
 ### Verification
 
@@ -199,23 +211,38 @@ If `INPUT`'s directory also has a sibling `..._training.csv` (as written by
 `sportadmin_vår_2025_training.csv`), it's picked up automatically — no flag
 needed — and adds one more console report plus a chart panel in the HTML
 page: a glidande (sliding) 8-week average of each player's training
-"Kommer" rate, one point per calendar week. The rate for a given week's
-window is `(that player's Kommer count in the trailing 8 weeks) / (every
-training session that actually happened in those 8 weeks)` — the same
-denominator for every player, so a player absent from Kallelser for a
-whole window shows 0%, not blank (a window with zero sessions at all shows
-blank).
+attendance, one point per calendar week. If a sibling `..._narvaro.csv`
+(actual coach-confirmed attendance, see above) is *also* present, up to
+three curves are shown instead of one:
 
-There are two curves, with a legend on the HTML page: the raw rate
-("Kommer", blue), and an **adjusted** rate (red) that also credits
-`Kommer ej` rows marked `excused == "ok"` (see `classify_absences.py`
-above) as attendance — always >= the raw rate, and identical to it until
-something's been marked excused. The console report's sparkline and
-printed percentage track the *adjusted* rate (so it reads the same as the
-HTML chart's rightmost value); the HTML page draws the raw rate as a blue
-line and — only once it actually differs — the adjusted rate as a red
-line layered on top of it, name left / chart center / latest (adjusted)
-value right, with a gap in either line wherever a week had no data rather
+* **Kommer** (blue) — the player's self-reported "Kommer" rate: `(their
+  Kommer count in the trailing 8 weeks) / (every training session that
+  actually happened in those 8 weeks)`. Always present, and its own
+  denominator is unaffected by whether Närvaro data exists — a player
+  absent from Kallelser for a whole window shows 0%, not blank (a window
+  with zero sessions at all shows blank).
+* **Närvaro** (green) and **Närvaro+ursäkt** (red) — only shown when a
+  matching `_narvaro.csv` was loaded, and only for training dates that
+  appear in *both* files (a training Kallelser knows about but the coach
+  hasn't logged attendance for yet is excluded from these two curves'
+  denominator entirely, rather than counting as 0 sessions or an automatic
+  absence). Green is the actual-presence rate; red additionally credits
+  `Kommer ej` rows marked `excused == "ok"` (see `classify_absences.py`
+  above) — a player counted in both (present *and* separately excused for
+  the same session) is only counted once, never twice. Green and red share
+  one denominator, so red >= green pointwise by construction; that
+  denominator is generally *smaller* than blue's, since it's restricted to
+  sessions with matched Närvaro data — the two are deliberately not
+  directly comparable, being two different rates (self-report vs. actual
+  presence) rather than one rate with an adjustment on top.
+
+The console report's sparkline/percentage columns show whichever curves
+are available (Kommer always; Närvaro/Närvaro+ursäkt only alongside a
+loaded `_narvaro.csv`), sorted by the most complete curve's latest value
+(red if present, else blue) descending. The HTML page mirrors this with a
+legend and up to three lines — blue, then green, then red layered on top —
+name left / chart center / latest value (same "most complete curve"
+choice) right, with a gap in any line wherever a week had no data rather
 than interpolating across it.
 
 ### generate_index.py
@@ -355,24 +382,19 @@ Player_45                                                                  B3   
 =====================================================================================================================================================
 ```
 
-Only printed when a sibling `_training.csv` was found (trend/last value
-here are the adjusted, "red curve" rate — identical to the raw rate since
-nothing in this sample has been marked excused yet):
+Only printed when a sibling `_training.csv` was found; the Närvaro/
+Närvaro+ursäkt columns only when a sibling `_narvaro.csv` was *also* found
+(synthetic data, showing all three — Player_10 and Player_41 are absent
+from a couple of the underlying Kommer/Närvaro sessions but were excused,
+which is why Närvaro+ursäkt reads higher than either Kommer or Närvaro):
 
 ```
-=================================
-Glidande 8-veckors snitt av
-träningsnärvaro ("Kommer") per
-spelare, vecka för vecka. Andelen
-räknas mot samtliga träningar som
-faktiskt genomfördes under
-fönstret.
-
-player name      trend last value
-  Player_01 ██████████       100%
-  Player_06 █▅▆▆▇▇▇▇▇█       100%
-  Player_31 ██████████       100%
-  Player_41 ███▆▇▆▅▅▅▄        38%
-  Player_10 ▁▅▃▅▄▃▃▃▄▃        25%
-=================================
+====================================================================================
+player name     Kommer Kommer %    Närvaro Närvaro % Närvaro+ursäkt Närvaro+ursäkt %
+  Player_01 ██████████     100% ██████████      100%     ██████████             100%
+  Player_06 ▁▁▃▅▅▅▅▅▆▇      88% ▁▁▃▅▅▅▅▅▆▇       88%     ██████████             100%
+  Player_31 ██████████     100% ██████████      100%     ██████████             100%
+  Player_10 ▁▅▃▅▅▆▅▅▅▄      38% ██▆▆▇▇▆▅▅▄       38%     ██▆▆▇▇▆▆▆▆              75%
+  Player_41 ██▆▅▅▅▅▅▄▄      38% ██▆▅▅▅▅▅▄▄       38%     █████▇▇▇▆▆              75%
+====================================================================================
 ```

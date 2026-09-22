@@ -46,6 +46,13 @@ def training_sibling_path(csv_path):
     return stem + "_training" + ext
 
 
+def narvaro_sibling_path(csv_path):
+    """sportadmin_vår_2025.csv -> sportadmin_vår_2025_narvaro.csv (same dir) -
+    sibling to, not chained after, training_sibling_path()'s file."""
+    stem, ext = os.path.splitext(csv_path)
+    return stem + "_narvaro" + ext
+
+
 WEEKDAY_MAP = {"mån": 0, "tis": 1, "ons": 2, "tor": 3, "fre": 4, "lör": 5, "sön": 6}
 
 
@@ -94,6 +101,7 @@ class SportadminGamesAnalyzer:
     def __init__(self, args):
         self.args = args
         self.training_df = None
+        self.narvaro_df = None
 
     def pretty_print(self, df, show_index, description):
 
@@ -282,20 +290,73 @@ class SportadminGamesAnalyzer:
                       f"doesn't overlap the match data ({match_min.date()}..{match_max.date()})")
 
 
+    def load_narvaro(self, filename):
+        """Parse a Närvaro (actual attendance) sibling CSV (4 fields: date,
+        activity_id, player_name, state - written by sportadmin_scraper.py's
+        --trainings run) into self.narvaro_df. "state" is the literal word
+        "present" or "absent". Cross-referencing against self.training_df
+        happens by date in _weekly_attendance_rates() - the two sources use
+        disjoint activity-id namespaces (confirmed against the live site),
+        so activity_id here is kept only for traceability, never joined on."""
+        rows = []
+        with open(filename, newline='') as csvfile:
+            reader = csv.reader(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
+            for row in reader:
+                if len(row) < 4:
+                    continue
+                date_str, activity_id, name, state = row[:4]
+                date = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+                rows.append([date, activity_id, name, state == "present"])
+
+        columns = ["date", "activity_id", "player name", "present"]
+        self.narvaro_df = pd.DataFrame(rows, columns=columns)
+        self._resolve_narvaro_names()
+
+
+    def _resolve_narvaro_names(self):
+        """Confirmed live: Närvaro's frozen name column truncates long
+        names to a fixed width plus a literal ".." (e.g. "Nikodemus
+        Osterkamp .." for "Nikodemus Osterkamp Söderström") - without
+        this, every such player's narvaro_df rows silently fail to join
+        against training_df by name and read as 0% Närvaro. Remap any
+        name ending in ".." to the one training_df name it's an unambiguous
+        prefix of; leave it as-is (logging a warning) if that's not the
+        case, rather than guessing."""
+        if self.training_df is None:
+            return
+        full_names = self.training_df["player name"].unique()
+        truncated = self.narvaro_df["player name"].str.endswith("..")
+        mapping = {}
+        for name in self.narvaro_df.loc[truncated, "player name"].unique():
+            prefix = name[:-2]
+            candidates = [f for f in full_names if f.startswith(prefix)]
+            if len(candidates) == 1:
+                mapping[name] = candidates[0]
+            else:
+                print(f"WARNING: Närvaro name {name!r} (truncated) matched "
+                      f"{len(candidates)} training-data names {candidates}; "
+                      f"leaving unresolved")
+        if mapping:
+            self.narvaro_df["player name"] = self.narvaro_df["player name"].replace(mapping)
+
+
     def _apply_obfuscation(self):
         """Replace real player names with Player_NN everywhere, using ONE
-        mapping shared across self.df and self.training_df (if loaded) so
-        the same person gets the same alias in both reports."""
+        mapping shared across self.df/self.training_df/self.narvaro_df (each
+        if loaded) so the same person gets the same alias in every report."""
         if not self.args.obfuscate:
             return
         names = pd.concat([
             self.df['player name'],
             self.training_df['player name'] if self.training_df is not None else pd.Series(dtype=str),
+            self.narvaro_df['player name'] if self.narvaro_df is not None else pd.Series(dtype=str),
         ]).unique()
         mapping = {name: f"Player_{i+1:02d}" for i, name in enumerate(names)}
         self.df['player name'] = self.df['player name'].map(mapping)
         if self.training_df is not None:
             self.training_df['player name'] = self.training_df['player name'].map(mapping)
+        if self.narvaro_df is not None:
+            self.narvaro_df['player name'] = self.narvaro_df['player name'].map(mapping)
 
 
     def analyze(self):
@@ -401,22 +462,36 @@ class SportadminGamesAnalyzer:
         return weeks
 
     def _weekly_attendance_rates(self):
-        """Return (weeks, rate_df, adjusted_rate_df): `weeks` is the
-        continuous (iso_year, iso_week) axis covering self.training_df's
-        full date range; both DataFrames have one row per week in `weeks`
-        and one column per player, sharing the same denominator - every
-        training session that actually occurred in the
-        TRAINING_ROLLING_WEEKS-trailing window, the same for every player
-        in a given window:
+        """Return (weeks, rate_df, green_rate_df, red_rate_df). `weeks` is
+        the continuous (iso_year, iso_week) axis covering self.training_df's
+        full date range; every returned DataFrame has one row per week in
+        `weeks` and one column per player.
 
-        - rate_df ("blue"): (their "Kommer" count in the window) / denominator * 100.
-        - adjusted_rate_df ("red"): (Kommer count + "Kommer ej" rows they
-          were excused for, i.e. excused == "ok") / denominator * 100 -
-          always >= rate_df, since it only ever credits more sessions.
+        - rate_df ("blue"): (player's "Kommer" count in the window) /
+          (every training session that actually occurred in the window,
+          the same denominator for every player) * 100. Unaffected by
+          Närvaro data (own, wider denominator - deliberate: blue is a
+          self-report rate, not a presence rate).
 
-        A window with zero sessions at all is NaN in both; a window with
-        sessions the player has no rows in is 0%, not NaN (they attended
-        none of what happened)."""
+        - green_rate_df/red_rate_df: (None, None) if self.narvaro_df is
+          absent/empty, or if no training date has a matching Närvaro
+          record. Otherwise both share a SEPARATE, smaller denominator:
+          only sessions whose date also has Närvaro data (a session the
+          coach hasn't logged attendance for yet is excluded from this
+          denominator, not counted as 0 or as an automatic absence).
+          - green: (player's Närvaro "present" count among matched
+            sessions in the window) / matched-denominator * 100.
+          - red: (player's count of matched sessions where they were
+            EITHER present in Närvaro OR had an excused ("ok") "Kommer
+            ej" row) / matched-denominator * 100 - the union is taken per
+            (player, date) pair, before any weekly aggregation, so a
+            player who is both present and separately marked excused for
+            the same date is counted once, not twice. red >= green
+            pointwise by construction.
+
+        A window with zero sessions in its denominator is NaN; a window
+        with sessions a player has no rows in is 0%, not NaN (they
+        attended none of what happened)."""
         df = self.training_df
         weeks = self._iso_week_axis(df["date"].min(), df["date"].max())
 
@@ -432,31 +507,72 @@ class SportadminGamesAnalyzer:
                 index=weeks)
 
         kommer_per_player_week = counts_by_week_player(df[df["state"] == "Kommer"])
-        excused_per_player_week = counts_by_week_player(
-            df[(df["state"] == "Kommer ej") & (df["excused"] == "ok")])
-        adjusted_per_player_week = kommer_per_player_week + excused_per_player_week
 
-        rolling_sessions = sessions_per_week.rolling(self.TRAINING_ROLLING_WEEKS, min_periods=1).sum()
-
-        def rolling_rate(counts_df):
+        def rolling_rate(counts_df, denom_series):
             rolling_counts = counts_df.rolling(self.TRAINING_ROLLING_WEEKS, min_periods=1).sum()
-            rate = rolling_counts.div(rolling_sessions, axis=0) * 100
-            return rate.where(rolling_sessions > 0)
+            rolling_denom = denom_series.rolling(self.TRAINING_ROLLING_WEEKS, min_periods=1).sum()
+            rate = rolling_counts.div(rolling_denom, axis=0) * 100
+            return rate.where(rolling_denom > 0)
 
-        rate_df = rolling_rate(kommer_per_player_week)
-        adjusted_rate_df = rolling_rate(adjusted_per_player_week)
-        return weeks, rate_df, adjusted_rate_df
+        rate_df = rolling_rate(kommer_per_player_week, sessions_per_week)
+
+        if self.narvaro_df is None or self.narvaro_df.empty:
+            return weeks, rate_df, None, None
+
+        matched_dates = set(df["date"].unique()) & set(self.narvaro_df["date"].unique())
+        if not matched_dates:
+            return weeks, rate_df, None, None
+
+        train_m = df[df["date"].isin(matched_dates)]
+        narvaro_m = self.narvaro_df[self.narvaro_df["date"].isin(matched_dates)]
+        # every matched date has exactly one (iso_year, iso_week) - lift it
+        # from training_df rather than recomputing isocalendar() again.
+        date_to_yw = dict(zip(train_m["date"], zip(train_m["iso_year"], train_m["iso_week"])))
+
+        narvaro_sessions = train_m.drop_duplicates("activity_id").groupby(
+            ["iso_year", "iso_week"]).size()
+        narvaro_sessions_per_week = pd.Series(
+            [int(narvaro_sessions.get(w, 0)) for w in weeks], index=weeks)
+
+        def counts_from_pairs(pairs):
+            counts = collections.Counter()
+            for date, player in pairs:
+                yw = date_to_yw.get(date)
+                if yw is None:
+                    continue
+                counts[(yw[0], yw[1], player)] += 1
+            return pd.DataFrame(
+                {p: [counts.get((y, w, p), 0) for (y, w) in weeks] for p in players},
+                index=weeks)
+
+        present_pairs = set(zip(narvaro_m.loc[narvaro_m["present"], "date"],
+                                narvaro_m.loc[narvaro_m["present"], "player name"]))
+        excused_mask = (train_m["state"] == "Kommer ej") & (train_m["excused"] == "ok")
+        excused_pairs = set(zip(train_m.loc[excused_mask, "date"],
+                                train_m.loc[excused_mask, "player name"]))
+        # Union BEFORE weekly aggregation - a (date, player) pair present in
+        # both sets still contributes exactly one occurrence.
+        union_pairs = present_pairs | excused_pairs
+
+        present_per_player_week = counts_from_pairs(present_pairs)
+        union_per_player_week = counts_from_pairs(union_pairs)
+
+        green_rate_df = rolling_rate(present_per_player_week, narvaro_sessions_per_week)
+        red_rate_df = rolling_rate(union_per_player_week, narvaro_sessions_per_week)
+        return weeks, rate_df, green_rate_df, red_rate_df
 
     def training_attendance_trend(self):
-        """Console report: one row per player - name, a block-character
-        sparkline of the rolling attendance rate over every observed week,
-        and the latest window's value. Both the sparkline and "last value"
-        track the ADJUSTED ("red") rate - Kommer plus excused==\"ok\"
-        Kommer-ej - which is >= the raw Kommer rate and becomes identical
-        to it once nothing has been marked excused. Same pretty_print()/
-        DataFrame-of-rendered-strings idiom as distribution_by_series()'s
-        ASCII bars."""
-        weeks, rate_df, adjusted_rate_df = self._weekly_attendance_rates()
+        """Console report: one row per player with a block-character
+        sparkline + latest value for each available curve - "Kommer"
+        (blue, self-reported RSVP, always present), "Närvaro" (green,
+        actual attendance) and "Närvaro+ursäkt" (red, Närvaro plus an
+        excused "Kommer ej", never double-counting a player who is both).
+        The Närvaro/Närvaro+ursäkt columns are omitted entirely (not
+        blank) when no Närvaro sibling file was loaded, so files without
+        one render exactly as before this feature existed. Same
+        pretty_print()/DataFrame-of-rendered-strings idiom as
+        distribution_by_series()'s ASCII bars."""
+        weeks, rate_df, green_rate_df, red_rate_df = self._weekly_attendance_rates()
         if not weeks:
             return
 
@@ -471,16 +587,31 @@ class SportadminGamesAnalyzer:
                     chars.append(blocks[level])
             return "".join(chars)
 
-        rows = []
-        for player in adjusted_rate_df.columns:
-            series = adjusted_rate_df[player]
+        def last_str(series):
             last = series.iloc[-1]
-            rows.append({
+            return last, (f"{last:.0f}%" if pd.notna(last) else "-")
+
+        have_narvaro = green_rate_df is not None and red_rate_df is not None
+
+        rows = []
+        for player in rate_df.columns:
+            blue_last, blue_str = last_str(rate_df[player])
+            row = {
                 "player name": player,
-                "trend": sparkline(series.tolist()),
-                "last value": f"{last:.0f}%" if pd.notna(last) else "-",
-                "_sort": last if pd.notna(last) else -1,
-            })
+                "Kommer": sparkline(rate_df[player].tolist()),
+                "Kommer %": blue_str,
+            }
+            sort_key = blue_last
+            if have_narvaro:
+                green_last, green_str = last_str(green_rate_df[player])
+                red_last, red_str = last_str(red_rate_df[player])
+                row["Närvaro"] = sparkline(green_rate_df[player].tolist())
+                row["Närvaro %"] = green_str
+                row["Närvaro+ursäkt"] = sparkline(red_rate_df[player].tolist())
+                row["Närvaro+ursäkt %"] = red_str
+                sort_key = red_last
+            row["_sort"] = sort_key if pd.notna(sort_key) else -1
+            rows.append(row)
         out_df = pd.DataFrame(rows).sort_values(
             ["_sort", "player name"], ascending=[False, True]).drop(columns="_sort")
 
@@ -491,41 +622,59 @@ class SportadminGamesAnalyzer:
             weekday_note = (" Endast " + ", ".join(inv[d] for d in sorted(weekday_set))
                             + "-träningar är medräknade.")
 
+        denom_note = (" \"Kommer\" räknas mot samtliga träningar som faktiskt "
+                      "genomfördes under fönstret; \"Närvaro\"/\"Närvaro+ursäkt\" "
+                      "räknas mot de av dem där närvaro faktiskt registrerats."
+                      if have_narvaro else
+                      " Andelen räknas mot samtliga träningar som faktiskt "
+                      "genomfördes under fönstret.")
+
         self.pretty_print(out_df, False, f"""
                           Glidande {self.TRAINING_ROLLING_WEEKS}-veckors snitt av
-                          träningsnärvaro ("Kommer") per spelare, vecka för
-                          vecka. Andelen räknas mot samtliga träningar som
-                          faktiskt genomfördes under fönstret.
+                          träningsnärvaro per spelare, vecka för vecka.
+                          {denom_note}
                           {weekday_note}
                           """)
 
     def _build_training_trend_json(self):
         """JSON-friendly equivalent of training_attendance_trend(), for the
-        HTML/SVG chart. None if no training data was loaded. Each row
-        carries both curves: "values"/"last" (raw Kommer rate, drawn blue)
-        and "adjusted_values"/"adjusted_last" (Kommer + excused=="ok"
-        Kommer-ej, drawn red on top) - the adjusted fields are omitted
-        entirely when identical to the raw ones (nothing has been marked
-        excused yet), so the chart draws only one line until they diverge."""
+        HTML chart. None if no training data was loaded. Each row always
+        carries "values"/"last" (blue, Kommer). When a Närvaro sibling
+        file was loaded and has at least one matched session, it also
+        carries "narvaro_values"/"narvaro_last" (green, actual presence)
+        and "adjusted_values"/"adjusted_last" (red, presence OR excused
+        Kommer-ej - same field names the chart has always used for its
+        second curve, now sourced from Närvaro instead of Kommer+excused),
+        and "last"/the sort key switch to the red curve as the headline
+        number."""
         if self.training_df is None or self.training_df.empty:
             return None
-        weeks, rate_df, adjusted_rate_df = self._weekly_attendance_rates()
+        weeks, rate_df, green_rate_df, red_rate_df = self._weekly_attendance_rates()
         if not weeks:
             return None
 
         week_labels = [f"{y}-W{w:02d}" for (y, w) in weeks]
+        have_narvaro = green_rate_df is not None and red_rate_df is not None
+
+        def to_values(series):
+            return [None if pd.isna(v) else round(float(v), 1) for v in series]
+
+        def last_of(values):
+            return next((v for v in reversed(values) if v is not None), None)
+
         rows = []
         for player in rate_df.columns:
-            values = [None if pd.isna(v) else round(float(v), 1) for v in rate_df[player]]
-            adjusted_values = [None if pd.isna(v) else round(float(v), 1)
-                              for v in adjusted_rate_df[player]]
-            last = next((v for v in reversed(values) if v is not None), None)
-            adjusted_last = next((v for v in reversed(adjusted_values) if v is not None), None)
-            row = {"player": player, "values": values, "last": adjusted_last}
-            if adjusted_values != values:
-                row["adjusted_values"] = adjusted_values
-                row["adjusted_last"] = adjusted_last
-                row["raw_last"] = last
+            values = to_values(rate_df[player])
+            last = last_of(values)
+            row = {"player": player, "values": values, "last": last}
+            if have_narvaro:
+                green_values = to_values(green_rate_df[player])
+                red_values = to_values(red_rate_df[player])
+                row["narvaro_values"] = green_values
+                row["narvaro_last"] = last_of(green_values)
+                row["adjusted_values"] = red_values
+                row["adjusted_last"] = last_of(red_values)
+                row["last"] = row["adjusted_last"]
             rows.append(row)
         rows.sort(key=lambda r: (-(r["last"] if r["last"] is not None else -1), r["player"]))
 
@@ -844,6 +993,10 @@ if __name__ == "__main__":
         training_path = training_sibling_path(csv_path)
         if os.path.exists(training_path):
             sp.load_training(training_path)
+
+        narvaro_path = narvaro_sibling_path(csv_path)
+        if sp.training_df is not None and os.path.exists(narvaro_path):
+            sp.load_narvaro(narvaro_path)
 
         sp._apply_obfuscation()
         sp.analyze()

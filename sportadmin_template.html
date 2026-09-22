@@ -380,6 +380,19 @@
     stroke: var(--surface-raised);
     stroke-width: 1.5;
   }
+  .trend-line-narvaro {
+    fill: none;
+    stroke: var(--group-2);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .trend-dot-narvaro { fill: var(--group-2); }
+  .trend-dot-narvaro-last {
+    fill: var(--group-2);
+    stroke: var(--surface-raised);
+    stroke-width: 1.5;
+  }
   .trend-line-adjusted {
     fill: none;
     stroke: var(--home-color);
@@ -403,6 +416,7 @@
   .dist-legend .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
   .dist-legend .swatch-home { background: var(--home-color); }
   .dist-legend .swatch-away { background: var(--focus); }
+  .dist-legend .swatch-narvaro { background: var(--group-2); }
 
   .copair-list { display: flex; flex-direction: column; gap: 2px; }
   .copair-row {
@@ -508,9 +522,10 @@
     <div class="eyebrow">Säsongsöversikt</div>
     <h2>Träningsnärvaro</h2>
     <p class="lede" id="trainingTrendLede"></p>
-    <div class="dist-legend">
+    <div class="dist-legend" id="trainingTrendLegend">
       <span><span class="swatch swatch-away"></span>Kommer</span>
-      <span><span class="swatch swatch-home"></span>Kommer-ej-tillfällen med godkänd anledning</span>
+      <span id="trainingTrendLegendNarvaro" hidden><span class="swatch swatch-narvaro"></span>Närvaro</span>
+      <span id="trainingTrendLegendAdjusted" hidden><span class="swatch swatch-home"></span>Närvaro + kommer-ej med godkänd anledning</span>
     </div>
     <div class="dist-table-wrap">
       <table class="dist-table" id="trainingTrendTable">
@@ -690,13 +705,20 @@ const NETWORK_DATA = __NETWORK_DATA_JSON__;
     const trend = NETWORK_DATA.training_trend;
     document.getElementById('trainingTrendSection').hidden = false;
 
+    const hasNarvaro = trend.rows.some(r => r.narvaro_values);
+    document.getElementById('trainingTrendLegendNarvaro').hidden = !hasNarvaro;
+    document.getElementById('trainingTrendLegendAdjusted').hidden = !hasNarvaro;
+
     const weekdayNote = trend.weekdays
       ? ` Endast ${trend.weekdays.join(', ')}-träningar är medräknade.`
       : '';
+    const denomNote = hasNarvaro
+      ? ' "Kommer" räknas mot samtliga träningar som faktiskt genomfördes under ' +
+        'fönstret; de övriga kurvorna räknas mot de av dem där närvaro faktiskt registrerats.'
+      : ' Andelen räknas mot samtliga träningar som faktiskt genomfördes under fönstret.';
     document.getElementById('trainingTrendLede').textContent =
-      `Glidande ${trend.window_weeks}-veckors snitt av träningsnärvaro ("Kommer") ` +
-      `per spelare, vecka för vecka. Andelen räknas mot samtliga träningar som ` +
-      `faktiskt genomfördes under fönstret.${weekdayNote}`;
+      `Glidande ${trend.window_weeks}-veckors snitt av träningsnärvaro per spelare, ` +
+      `vecka för vecka.${denomNote}${weekdayNote}`;
 
     const svgNS = 'http://www.w3.org/2000/svg';
     const W = 180, H = 32, PAD = 3;
@@ -759,18 +781,21 @@ const NETWORK_DATA = __NETWORK_DATA_JSON__;
       svg.classList.add('trend-spark');
 
       drawLine(svg, r.values, trend.weeks, 'trend-line', 'trend-dot');
-      // Present only when it differs from the raw curve (i.e. at least one
-      // "Kommer ej" was marked excused) - keeps the chart to a single blue
-      // line until there's something to overlay.
+      // Green/red are present only when a Närvaro sibling file was loaded
+      // for this run - blue-only otherwise. Draw order is z-order (later
+      // = on top): blue, then red, then green on top of both.
       if (r.adjusted_values) {
         drawLine(svg, r.adjusted_values, trend.weeks, 'trend-line-adjusted', 'trend-dot-adjusted');
+      }
+      if (r.narvaro_values) {
+        drawLine(svg, r.narvaro_values, trend.weeks, 'trend-line-narvaro', 'trend-dot-narvaro');
       }
       tdChart.appendChild(svg);
 
       const tdLast = document.createElement('td');
       tdLast.className = 'bar-count';
-      // r.last is always the adjusted (red) rate - identical to the raw
-      // rate once nothing has been marked excused.
+      // r.last is the red rate when Närvaro data is present, else the
+      // blue (Kommer) rate.
       tdLast.textContent = r.last === null ? '–' : Math.round(r.last) + '%';
 
       tr.append(tdName, tdChart, tdLast);
