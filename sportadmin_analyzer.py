@@ -443,9 +443,9 @@ class SportadminGamesAnalyzer:
         self._write_play_network_html(network_data)
 
 
-    # ~2 months of trailing weekly training sessions (single source of
+    # ~1 month of trailing weekly training sessions (single source of
     # truth like CLIQUE_K, emitted into the HTML data as "window_weeks").
-    TRAINING_ROLLING_WEEKS = 8
+    TRAINING_ROLLING_WEEKS = 4
 
     @staticmethod
     def _iso_week_axis(start_date, end_date):

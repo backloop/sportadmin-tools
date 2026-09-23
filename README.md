@@ -210,7 +210,7 @@ If `INPUT`'s directory also has a sibling `..._training.csv` (as written by
 `sportadmin_scraper.py --trainings`, e.g. `sportadmin_vår_2025.csv` ->
 `sportadmin_vår_2025_training.csv`), it's picked up automatically — no flag
 needed — and adds one more console report plus a chart panel in the HTML
-page: a glidande (sliding) 8-week average of each player's training
+page: a glidande (sliding) 4-week average of each player's training
 attendance, one point per calendar week. If a sibling `..._narvaro.csv`
 (actual coach-confirmed attendance, see above) is *also* present, up to
 three curves are shown instead of one:
