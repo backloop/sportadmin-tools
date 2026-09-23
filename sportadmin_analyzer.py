@@ -462,10 +462,15 @@ class SportadminGamesAnalyzer:
         return weeks
 
     def _weekly_attendance_rates(self):
-        """Return (weeks, rate_df, green_rate_df, red_rate_df). `weeks` is
-        the continuous (iso_year, iso_week) axis covering self.training_df's
-        full date range; every returned DataFrame has one row per week in
-        `weeks` and one column per player.
+        """Return (weeks, rate_df, green_rate_df, red_rate_df,
+        overall_green_rate). `weeks` is the continuous (iso_year, iso_week)
+        axis covering self.training_df's full date range; every returned
+        DataFrame has one row per week in `weeks` and one column per
+        player. `overall_green_rate` is a player -> float Series (None if
+        green_rate_df is None): each player's Närvaro presence rate over
+        the WHOLE matched timeframe at once (total present count / total
+        matched sessions), not a rolling window - used to sort players by
+        their overall attendance rather than just their latest window.
 
         - rate_df ("blue"): (player's "Kommer" count in the window) /
           (every training session that actually occurred in the window,
@@ -517,11 +522,11 @@ class SportadminGamesAnalyzer:
         rate_df = rolling_rate(kommer_per_player_week, sessions_per_week)
 
         if self.narvaro_df is None or self.narvaro_df.empty:
-            return weeks, rate_df, None, None
+            return weeks, rate_df, None, None, None
 
         matched_dates = set(df["date"].unique()) & set(self.narvaro_df["date"].unique())
         if not matched_dates:
-            return weeks, rate_df, None, None
+            return weeks, rate_df, None, None, None
 
         train_m = df[df["date"].isin(matched_dates)]
         narvaro_m = self.narvaro_df[self.narvaro_df["date"].isin(matched_dates)]
@@ -559,7 +564,13 @@ class SportadminGamesAnalyzer:
 
         green_rate_df = rolling_rate(present_per_player_week, narvaro_sessions_per_week)
         red_rate_df = rolling_rate(union_per_player_week, narvaro_sessions_per_week)
-        return weeks, rate_df, green_rate_df, red_rate_df
+
+        total_sessions = len(matched_dates)
+        present_counts = collections.Counter(player for _, player in present_pairs)
+        overall_green_rate = pd.Series(
+            {p: present_counts.get(p, 0) / total_sessions * 100 for p in players})
+
+        return weeks, rate_df, green_rate_df, red_rate_df, overall_green_rate
 
     def training_attendance_trend(self):
         """Console report: one row per player with a block-character
@@ -569,10 +580,14 @@ class SportadminGamesAnalyzer:
         excused "Kommer ej", never double-counting a player who is both).
         The Närvaro/Närvaro+ursäkt columns are omitted entirely (not
         blank) when no Närvaro sibling file was loaded, so files without
-        one render exactly as before this feature existed. Same
+        one render exactly as before this feature existed. Rows are
+        sorted by overall Närvaro descending (total present / total
+        matched sessions across the whole timeframe, not just the latest
+        window) when available, else by latest Kommer (blue). Same
         pretty_print()/DataFrame-of-rendered-strings idiom as
         distribution_by_series()'s ASCII bars."""
-        weeks, rate_df, green_rate_df, red_rate_df = self._weekly_attendance_rates()
+        weeks, rate_df, green_rate_df, red_rate_df, overall_green_rate = \
+            self._weekly_attendance_rates()
         if not weeks:
             return
 
@@ -609,7 +624,7 @@ class SportadminGamesAnalyzer:
                 row["Närvaro %"] = green_str
                 row["Närvaro+ursäkt"] = sparkline(red_rate_df[player].tolist())
                 row["Närvaro+ursäkt %"] = red_str
-                sort_key = red_last
+                sort_key = overall_green_rate[player]
             row["_sort"] = sort_key if pd.notna(sort_key) else -1
             rows.append(row)
         out_df = pd.DataFrame(rows).sort_values(
@@ -645,11 +660,15 @@ class SportadminGamesAnalyzer:
         and "adjusted_values"/"adjusted_last" (red, presence OR excused
         Kommer-ej - same field names the chart has always used for its
         second curve, now sourced from Närvaro instead of Kommer+excused),
-        and "last"/the sort key switch to the red curve as the headline
-        number."""
+        and "last" switches to the red curve as the headline number.
+        Rows are sorted by overall Närvaro descending (total present /
+        total matched sessions across the whole timeframe, not just the
+        latest window) when available, else by latest Kommer (blue) -
+        independent of which curve "last" itself reports."""
         if self.training_df is None or self.training_df.empty:
             return None
-        weeks, rate_df, green_rate_df, red_rate_df = self._weekly_attendance_rates()
+        weeks, rate_df, green_rate_df, red_rate_df, overall_green_rate = \
+            self._weekly_attendance_rates()
         if not weeks:
             return None
 
@@ -667,6 +686,7 @@ class SportadminGamesAnalyzer:
             values = to_values(rate_df[player])
             last = last_of(values)
             row = {"player": player, "values": values, "last": last}
+            sort_key = last
             if have_narvaro:
                 green_values = to_values(green_rate_df[player])
                 red_values = to_values(red_rate_df[player])
@@ -675,8 +695,12 @@ class SportadminGamesAnalyzer:
                 row["adjusted_values"] = red_values
                 row["adjusted_last"] = last_of(red_values)
                 row["last"] = row["adjusted_last"]
+                sort_key = overall_green_rate[player]
+            row["_sort"] = sort_key
             rows.append(row)
-        rows.sort(key=lambda r: (-(r["last"] if r["last"] is not None else -1), r["player"]))
+        rows.sort(key=lambda r: (-(r["_sort"] if r["_sort"] is not None else -1), r["player"]))
+        for row in rows:
+            del row["_sort"]
 
         weekday_set = getattr(self.args, "weekday_set", None)
         weekdays = None
