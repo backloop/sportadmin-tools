@@ -1221,6 +1221,11 @@ class SportadminGamesScraper:
                     raise
                 log.warning("Kallelser entry navigation timed out (attempt %d/4); "
                             "reloading and retrying", attempt + 1)
+                # Same insurance as the mid-walk reload below: a reload can
+                # land somewhere that doesn't re-show a month header before
+                # the next activity row, so any previously-tracked month
+                # must not survive it either.
+                self.curr_month_year = None
                 try:
                     self.page.reload()
                     self.page.wait_for_load_state("load", timeout=20000)
@@ -1403,6 +1408,12 @@ class SportadminGamesScraper:
 
         return fl.locator("table.idealis-table tbody tr")
 
+    # Confirmed live against Kallelser's own DATUM cell text (e.g. "13 -
+    # mån"); Monday=0..Sunday=6 to line up with datetime.weekday().
+    _SWEDISH_WEEKDAY_ABBR = {
+        "mån": 0, "tis": 1, "ons": 2, "tors": 3, "fre": 4, "lör": 5, "sön": 6,
+    }
+
     def parse_single_training(self, row):
         """Open one training activity from the Kallelser list and harvest
         the 'Kommer'/'Kommer ej' attendance tabs.
@@ -1450,7 +1461,9 @@ class SportadminGamesScraper:
 
         date_txt = cells.nth(0).inner_text().strip().rstrip("!").rstrip()
         # "20 - sön" -> the day number; month/year come from the last header.
-        day_part = date_txt.split("-")[0].strip()
+        day_part, _, weekday_part = date_txt.partition("-")
+        day_part = day_part.strip()
+        weekday_part = weekday_part.strip().lower()
         try:
             date = self.curr_month_year.replace(day=int(day_part))
         except ValueError:
@@ -1458,6 +1471,27 @@ class SportadminGamesScraper:
                         activity_name, date_txt)
             self.run_flags.append("date_unparsed")
             return (None, "")
+
+        # Order-independent sanity check, confirmed necessary live: a stale
+        # curr_month_year (from a page-navigation edge case that skipped
+        # re-encountering a month header) can silently misattribute an
+        # activity to the wrong month while the day number stays "valid"
+        # (e.g. a real 2025-01-13 activity read as 2025-11-13 - both valid
+        # dates, so nothing about the day number alone looks wrong). The
+        # DOM's own weekday abbreviation lets this be caught with no
+        # dependency on scan order: day 13 is a Monday in January 2025 but
+        # a Thursday in November 2025, so a claimed month/day whose actual
+        # weekday doesn't match what the row itself says is a red flag -
+        # reject rather than silently write a wrong date.
+        if weekday_part in self._SWEDISH_WEEKDAY_ABBR:
+            expected_weekday = self._SWEDISH_WEEKDAY_ABBR[weekday_part]
+            if date.weekday() != expected_weekday:
+                log.error("training activity %r: %r implies weekday %r, but "
+                          "%s falls on a different weekday - month "
+                          "misattribution suspected; skipping",
+                          activity_name, date_txt, weekday_part, date.date())
+                self.run_flags.append("weekday_mismatch_suspected")
+                return ([], "")
 
         if self.start_date and date < self.start_date:
             return ([], "")
@@ -1660,14 +1694,22 @@ class SportadminGamesScraper:
                 stuck_guard = 0
                 continue
 
-            # Defensive dedup against the (date, time, activity) text, not
-            # just row_idx - confirmed live that the checkbox/Typ filters
-            # silently revert to defaults after every Visa-and-back
+            # Defensive dedup against the (month, date, time, activity) text,
+            # not just row_idx - confirmed live that the checkbox/Typ
+            # filters silently revert to defaults after every Visa-and-back
             # navigation; if "Sida" (page) ever reverts the same way after
             # a multi-page advance, this stops it from silently
             # re-processing already-harvested rows instead of just
-            # re-deriving the same filter state at the same page.
-            fingerprint = tuple(row.locator("td").nth(i).inner_text().strip() for i in (0, 1, 2))
+            # re-deriving the same filter state at the same page. The
+            # month must be part of the key - confirmed live that omitting
+            # it silently dropped ~30% of a full year's sessions, since the
+            # DATUM cell alone ("04 - ons") recurs across different months
+            # for a weekly-recurring training at the same time/name, and
+            # was being read as an already-seen duplicate instead of a
+            # genuinely new session.
+            month_key = self.curr_month_year.strftime("%Y-%m") if self.curr_month_year else "?"
+            fingerprint = (month_key,) + tuple(
+                row.locator("td").nth(i).inner_text().strip() for i in (0, 1, 2))
             if fingerprint in self._seen_training_rows:
                 log.debug("training: skipping already-processed row %r", fingerprint)
                 stuck_guard = 0
@@ -1676,29 +1718,30 @@ class SportadminGamesScraper:
 
             d, _ = self.parse_single_training(row)
             if d:
-                # Confirmed live: a stale curr_month_year surviving a hard
-                # reload can misattribute an activity to the wrong month
-                # (e.g. a real 2025-01-29 activity got written as
-                # 2025-11-29 after one). We walk forward chronologically by
-                # construction, so a date this far behind the latest one
-                # already harvested is a red flag, not legitimate data -
-                # drop it rather than writing a silently wrong date; it'll
-                # either get picked up correctly later in the walk, or
-                # surface as a gap for manual follow-up.
+                # A stale curr_month_year surviving a hard reload used to be
+                # able to misattribute an activity to the wrong month (e.g.
+                # a real 2025-01-29 activity written as 2025-11-29) - now
+                # structurally prevented at the source: curr_month_year is
+                # reset to None on every reload (below) so a subsequent
+                # activity either gets a freshly-discovered, correct month
+                # header or is skipped outright ("month_header_missing"),
+                # never silently mislabeled. A reload also legitimately
+                # re-walks from page 1, so an earlier date CAN reappear
+                # after a later one was already reached via a different
+                # page-size/page-boundary path on a previous pass - that's
+                # expected recovery behaviour, not misattribution, so this
+                # is now just a diagnostic, not a drop.
                 row_date = d[0][0]
                 if (self._max_training_date_seen is not None
                         and row_date < self._max_training_date_seen
                         and (datetime.fromisoformat(self._max_training_date_seen)
                              - datetime.fromisoformat(row_date)).days > 60):
-                    log.error("training activity %s: date %s implausibly far before "
-                              "latest date seen (%s) - likely date misattribution "
-                              "after a reload; dropping this activity",
-                              d[0][1], row_date, self._max_training_date_seen)
-                    self.run_flags.append("date_misattribution_suspected")
-                    d = None
-                else:
-                    if self._max_training_date_seen is None or row_date > self._max_training_date_seen:
-                        self._max_training_date_seen = row_date
+                    log.warning("training activity %s: date %s is >60 days before "
+                                "the latest date seen so far (%s) - likely a reload "
+                                "re-walking earlier ground, not misattribution; keeping it",
+                                d[0][1], row_date, self._max_training_date_seen)
+                if self._max_training_date_seen is None or row_date > self._max_training_date_seen:
+                    self._max_training_date_seen = row_date
 
             if d:
                 self._training_data.extend(d)
