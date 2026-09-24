@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 import re
-from playwright.sync_api import Playwright, sync_playwright, expect, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Playwright, sync_playwright, expect, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 
 import time
 import locale
@@ -140,6 +140,9 @@ class SportadminGamesScraper:
         self.trainings_filter_set = False
         self.activity_type = None
         self.expected_activity_name = None
+        self.training_year = None
+        self._training_list_total = None
+        self._kallelser_reload_retries = 30
 
     # ------------------------------------------------------------------ waits
 
@@ -1193,43 +1196,210 @@ class SportadminGamesScraper:
         count is likewise recomputed fresh every call rather than cached,
         so a reversion is corrected immediately instead of compounding.
         """
-        self.page.get_by_role("link", name="Kallelser").click()
-        frame = self.page.wait_for_selector("#vpframe_1").content_frame()
-        self.wait_for_blazor_idle(frame)
-        fl = self.page.frame_locator("#vpframe_1")
-        fl.locator("table.idealis-table").first.wait_for(timeout=20000)
+        # This entry sequence occasionally times out under load (confirmed
+        # live: neither the table nor the "tomt" placeholder appears within
+        # 20s) - a handful of retries here is cheap next to losing an
+        # entire run's progress (output is only written at the very end).
+        for attempt in range(4):
+            try:
+                self.page.get_by_role("link", name="Kallelser").click()
+                frame = self.page.wait_for_selector("#vpframe_1", timeout=45000).content_frame()
+                self.wait_for_blazor_idle(frame)
+                fl = self.page.frame_locator("#vpframe_1")
+                # The initial render can legitimately show "Här var det
+                # tomt..." instead of a table - e.g. Grupp defaults to a
+                # past year while "Endast kommande aktiviteter" is still
+                # checked, which genuinely has zero matches - so wait for
+                # either rather than requiring the table specifically; the
+                # filter logic below (which tolerates a zero-row table)
+                # sorts out the real state from there.
+                fl.locator("table.idealis-table").or_(fl.get_by_text("Här var det tomt")) \
+                    .first.wait_for(timeout=30000)
+                break
+            except PlaywrightTimeoutError:
+                if attempt == 3:
+                    raise
+                log.warning("Kallelser entry navigation timed out (attempt %d/4); "
+                            "reloading and retrying", attempt + 1)
+                try:
+                    self.page.reload()
+                    self.page.wait_for_load_state("load", timeout=20000)
+                except Exception as e:
+                    log.debug("Kallelser entry reload raced: %s", e)
+                time.sleep(3)
 
-        # "Endast kommande aktiviteter" hides everything before today when
-        # checked; re-uncheck it any time it's found checked again.
-        checkboxes = fl.locator("input[type=checkbox]")
-        if checkboxes.count() > 0 and checkboxes.nth(0).is_checked():
-            if self.trainings_filter_set:
-                log.warning("Kallelser 'upcoming only' filter had reverted; re-unchecking")
-            checkboxes.nth(0).uncheck(force=True)
-            self._wait_kallelser_table_stable(fl)
+        # Four filters - Grupp (season/year), "Endast kommande
+        # aktiviteter" (upcoming-only), Typ (activity type), and Rader per
+        # sida (rows/page) - all independently revert to their defaults
+        # after a Visa-and-back navigation. Confirmed live: fixing them in
+        # one linear pass isn't enough - re-selecting one can itself reset
+        # another that was already fixed earlier in the same pass (e.g.
+        # changing Typ was observed to silently revert Grupp back to its
+        # placeholder), which a single pass has no way to catch. Loop the
+        # whole check-and-fix pass until one iteration makes no changes.
+        current_grupp = current_typ = None
+        for _ in range(6):
+            changed = False
 
-        # "Typ" dropdown (options: Alla/Träning/Match-Tävling/Övrigt/Möte/
-        # Flerdagsaktivitet) filters by activity type; matched by visible
-        # label so a caller-supplied --activity-type just works. Re-select
-        # any time it's found reverted to something else.
-        typ_select = fl.locator("select").nth(1)
-        current_typ = typ_select.evaluate("el => el.selectedOptions[0]?.textContent || ''")
-        if current_typ != activity_type:
-            if self.trainings_filter_set:
-                log.warning("Kallelser 'Typ' filter had reverted to %r; re-selecting %r",
-                            current_typ, activity_type)
-            typ_select.select_option(label=activity_type)
-            self._wait_kallelser_table_stable(fl)
+            # "Grupp" (options like "Fotboll 2025 - Fotboll P 2014 (40/9)")
+            # is what actually scopes Kallelser to a season/year - confirmed
+            # live against a screenshot after this went unhandled: without
+            # it, the page silently stays on whatever grupp was last
+            # selected (e.g. by an earlier Närvaro scrape in the same run,
+            # or the site's own default), regardless of --year.
+            if self.training_year:
+                grupp_select = fl.locator("select").nth(0)
+                current_grupp = grupp_select.evaluate(
+                    "el => el.selectedOptions[0]?.textContent || ''")
+                if str(self.training_year) not in current_grupp:
+                    if self.trainings_filter_set:
+                        log.warning("Kallelser 'Grupp' filter had reverted to %r; "
+                                    "re-selecting year %r", current_grupp, self.training_year)
+                    options = grupp_select.locator("option").all_inner_texts()
+                    matching = [o for o in options if str(self.training_year) in o]
+                    if len(matching) == 1:
+                        try:
+                            grupp_select.select_option(label=matching[0])
+                            self._wait_kallelser_table_stable(fl)
+                        except Exception as e:
+                            log.debug("Kallelser 'Grupp' select raced: %s", e)
+                        changed = True
+                    else:
+                        log.error("Kallelser 'Grupp' options matching year %r: %s "
+                                  "(expected exactly 1)", self.training_year, matching)
+
+            # "Endast kommande aktiviteter" hides everything before today
+            # when checked; re-uncheck it any time it's found checked again.
+            # Confirmed live: is_checked() can be stale by the time uncheck()
+            # actually runs (an async re-render already flipped it back),
+            # which Playwright treats as a hard error ("did not change its
+            # state") rather than a no-op - harmless here, just retry.
+            checkboxes = fl.locator("input[type=checkbox]")
+            if checkboxes.count() > 0 and checkboxes.nth(0).is_checked():
+                if self.trainings_filter_set:
+                    log.warning("Kallelser 'upcoming only' filter had reverted; re-unchecking")
+                try:
+                    checkboxes.nth(0).uncheck(force=True)
+                    self._wait_kallelser_table_stable(fl)
+                except Exception as e:
+                    log.debug("Kallelser checkbox uncheck raced: %s", e)
+                changed = True
+
+            # "Typ" dropdown (options: Alla/Träning/Match-Tävling/Övrigt/
+            # Möte/Flerdagsaktivitet) filters by activity type; matched by
+            # visible label so a caller-supplied --activity-type just works.
+            typ_select = fl.locator("select").nth(1)
+            current_typ = typ_select.evaluate("el => el.selectedOptions[0]?.textContent || ''")
+            if current_typ != activity_type:
+                if self.trainings_filter_set:
+                    log.warning("Kallelser 'Typ' filter had reverted to %r; re-selecting %r",
+                                current_typ, activity_type)
+                try:
+                    typ_select.select_option(label=activity_type)
+                    self._wait_kallelser_table_stable(fl)
+                except Exception as e:
+                    log.debug("Kallelser 'Typ' select raced: %s", e)
+                changed = True
+
+            # "Rader per sida" (rows per page: 30/60/100) - this list has
+            # its own pagination separate from everything above; at the
+            # default 30 a full year's worth of trainings silently gets
+            # truncated to the first page with no error. Maximize it to cut
+            # down how often the next-page click below is needed.
+            page_size = fl.locator(".fast-page-pageindicator", has_text=re.compile(r"^100$")).first
+            if page_size.count() and "active-pageindicator" not in (page_size.get_attribute("class") or ""):
+                try:
+                    page_size.click()
+                    self._wait_kallelser_table_stable(fl)
+                except Exception as e:
+                    log.debug("Kallelser page-size click raced: %s", e)
+                changed = True
+
+            if not changed:
+                break
+        else:
+            log.warning("Kallelser filters did not converge after 6 passes "
+                        "(grupp=%r typ=%r)", current_grupp, current_typ)
 
         self.row_count = fl.locator("table.idealis-table tbody tr").count()
         if not self.trainings_filter_set:
             log.info("training list: %d rows after filtering to type=%r",
                      self.row_count, activity_type)
             self.trainings_filter_set = True
+            # ".fast-page-label" reads "1-100 av 116" - capture the true
+            # grand total across all pages, used below to tell a genuinely
+            # exhausted list apart from a transient empty render.
+            label = fl.locator(".fast-page-label").first
+            if label.count():
+                m = re.search(r"av (\d+)", label.inner_text())
+                if m:
+                    self._training_list_total = int(m.group(1))
 
         if self.row_idx >= self.row_count:
-            log.info("all %d training rows done", self.row_count)
-            return None
+            # Confirmed live: a full year's Träning list spans multiple
+            # pages even at 100 rows/page. ".fast-range" holds the two
+            # prev/next arrow buttons (icon-only, no text/aria-label); the
+            # next one is `disabled` on the last page. Confirmed live this
+            # paginator (like ".fast-page-picker") renders twice in the
+            # DOM - scope to the first ".fast-range" block specifically,
+            # rather than nth(1) across all of them, which could otherwise
+            # resolve to the wrong duplicate's prev/next button.
+            next_btn = fl.locator(".fast-range").first.locator("button").nth(1)
+            if next_btn.count() and next_btn.get_attribute("disabled") is None:
+                log.info("training list: page exhausted (%d rows); advancing to next page",
+                         self.row_count)
+                next_btn.click()
+                self._wait_kallelser_table_stable(fl)
+                self.row_idx = 0
+                self.row_count = fl.locator("table.idealis-table tbody tr").count()
+            elif (self.row_count == 0 and self._kallelser_reload_retries > 0
+                  and (not self._training_list_total
+                       or len(self._seen_training_rows) < self._training_list_total)):
+                # Confirmed live: this can also happen on the very first
+                # call (before self._training_list_total is even known,
+                # e.g. right after login, before Kallelser's own render has
+                # caught up with its filter dropdowns already showing the
+                # correct values) - not just mid-walk. Retry whenever the
+                # true total isn't known yet, or is known and not yet
+                # fully harvested; only a KNOWN total already fully
+                # harvested skips this branch as genuine completion.
+                #
+                # The filter-convergence loop above can still land on a
+                # transient empty render it doesn't catch
+                # (e.g. a delayed reversion firing just after the loop's
+                # last no-op pass). We know real data remains (total from
+                # the page label > distinct rows harvested so far), so this
+                # isn't genuine completion - a full page reload has been
+                # the only reliable recovery observed for it.
+                self._kallelser_reload_retries -= 1
+                log.warning("training list: 0 rows but %d/%s harvested so far; "
+                            "hard-reloading Kallelser and retrying (%d retries left)",
+                            len(self._seen_training_rows),
+                            self._training_list_total if self._training_list_total else "?",
+                            self._kallelser_reload_retries)
+                # Insurance against misattributing dates after landing back
+                # on an early page post-reload: force re-discovery of the
+                # current month header rather than trusting whatever value
+                # was current before the reload.
+                self.curr_month_year = None
+                try:
+                    self.page.reload()
+                    self.page.wait_for_load_state("load", timeout=20000)
+                except Exception as e:
+                    log.debug("Kallelser reload raced: %s", e)
+                time.sleep(3)
+                try:
+                    return self.load_trainings_page(activity_type)
+                except PlaywrightTimeoutError as e:
+                    if self._kallelser_reload_retries <= 0:
+                        raise
+                    log.warning("training list: retry after reload still failed (%s); "
+                                "trying again (%d retries left)",
+                                e, self._kallelser_reload_retries)
+                    return self.load_trainings_page(activity_type)
+            else:
+                log.info("all %d training rows done", self.row_count)
+                return None
 
         return fl.locator("table.idealis-table tbody tr")
 
@@ -1384,7 +1554,8 @@ class SportadminGamesScraper:
         return (training_rows, "")
 
     def collect_trainings(self, email, password, start_date, end_date,
-                           activity_type, activity_name=None, run_idx=1, max_matches=0):
+                           activity_type, activity_name=None, year=None,
+                           run_idx=1, max_matches=0):
         """Run one full training-session scrape. Returns the list of
         harvested CSV rows: [date, activity_id, activity_name, name, state,
         location, excused, comment]."""
@@ -1394,12 +1565,17 @@ class SportadminGamesScraper:
         self.max_matches = max_matches
         self.activity_type = activity_type
         self.expected_activity_name = activity_name
+        self.training_year = year
         self._match_n = 0
         self.run_flags = []
         self.curr_month_year = None
         self.row_count = 0
         self.row_idx = 0
         self.trainings_filter_set = False
+        self._seen_training_rows = set()
+        self._training_list_total = None
+        self._kallelser_reload_retries = 30
+        self._max_training_date_seen = None
 
         self._login(email, password)
 
@@ -1407,17 +1583,61 @@ class SportadminGamesScraper:
 
         data = []
         stuck_guard = 0
+        no_progress_refreshes = 0
+        try:
+            data = self._walk_training_rows(rows, activity_type, stuck_guard, no_progress_refreshes)
+        except PlaywrightError as e:
+            # Output is only written once, at the very end - losing an
+            # exception here would silently discard every activity already
+            # harvested this run instead of writing what's real. Every
+            # retry/reload mechanism above already exhausts its own budget
+            # before propagating, so reaching here means genuinely
+            # unrecoverable site trouble - log it and keep what we have.
+            log.error("training walk aborted by an unrecoverable error (%s); "
+                      "keeping %d rows already harvested", e, len(self._training_data))
+            self.run_flags.append("walk_aborted_by_exception")
+            data = self._training_data
+
+        log.info("run %d: %d training rows harvested; run flags: %s",
+                 self.run_idx, len(data), self.run_flags or "none")
+        return data
+
+    def _walk_training_rows(self, rows, activity_type, stuck_guard, no_progress_refreshes):
+        self._training_data = []
         while rows is not None:
-            if self.row_idx > self.row_count + 5:
-                log.error("training row index %d exceeded row count %d "
-                          "without advancing; aborting", self.row_idx, self.row_count)
-                self.run_flags.append("row_walk_overrun")
-                break
+            if self.row_idx >= self.row_count:
+                # Confirmed live: a dedup-skipped row (see below) does NOT
+                # re-fetch the page, so a whole page of already-processed
+                # rows (e.g. "Sida" having silently reverted to 1 after a
+                # multi-page advance) used to run row_idx past the old
+                # "+5 overrun" guard before ever getting a chance to
+                # advance/reload past it. Refresh here instead, on the
+                # boundary itself, same as load_trainings_page's own
+                # page-advance/reload-retry logic already does after a
+                # successful parse - only abort if that keeps happening
+                # without ever reaching a genuinely new row.
+                rows = self.load_trainings_page(activity_type)
+                no_progress_refreshes += 1
+                if no_progress_refreshes > 60:
+                    log.error("60 consecutive page refreshes without reaching "
+                              "a new row; aborting")
+                    self.run_flags.append("row_walk_overrun")
+                    break
+                continue
 
             row = rows.nth(self.row_idx)
             self.row_idx += 1
 
             cell_count = row.locator("td").count()
+            if cell_count == 0:
+                # The whole table having emptied out mid-transition (e.g.
+                # between a page-advance click and its re-render) reads as
+                # every remaining row having 0 cells - racing through 50 of
+                # those in well under a second used to trip the guard below
+                # instantly. Force the row_idx>=row_count refresh path
+                # instead of blindly continuing through a stale locator.
+                self.row_idx = self.row_count
+                continue
             if cell_count != 9:
                 stuck_guard += 1
                 if stuck_guard > 50:
@@ -1440,10 +1660,50 @@ class SportadminGamesScraper:
                 stuck_guard = 0
                 continue
 
+            # Defensive dedup against the (date, time, activity) text, not
+            # just row_idx - confirmed live that the checkbox/Typ filters
+            # silently revert to defaults after every Visa-and-back
+            # navigation; if "Sida" (page) ever reverts the same way after
+            # a multi-page advance, this stops it from silently
+            # re-processing already-harvested rows instead of just
+            # re-deriving the same filter state at the same page.
+            fingerprint = tuple(row.locator("td").nth(i).inner_text().strip() for i in (0, 1, 2))
+            if fingerprint in self._seen_training_rows:
+                log.debug("training: skipping already-processed row %r", fingerprint)
+                stuck_guard = 0
+                continue
+            self._seen_training_rows.add(fingerprint)
+
             d, _ = self.parse_single_training(row)
-            if d is not None:
-                data.extend(d)
+            if d:
+                # Confirmed live: a stale curr_month_year surviving a hard
+                # reload can misattribute an activity to the wrong month
+                # (e.g. a real 2025-01-29 activity got written as
+                # 2025-11-29 after one). We walk forward chronologically by
+                # construction, so a date this far behind the latest one
+                # already harvested is a red flag, not legitimate data -
+                # drop it rather than writing a silently wrong date; it'll
+                # either get picked up correctly later in the walk, or
+                # surface as a gap for manual follow-up.
+                row_date = d[0][0]
+                if (self._max_training_date_seen is not None
+                        and row_date < self._max_training_date_seen
+                        and (datetime.fromisoformat(self._max_training_date_seen)
+                             - datetime.fromisoformat(row_date)).days > 60):
+                    log.error("training activity %s: date %s implausibly far before "
+                              "latest date seen (%s) - likely date misattribution "
+                              "after a reload; dropping this activity",
+                              d[0][1], row_date, self._max_training_date_seen)
+                    self.run_flags.append("date_misattribution_suspected")
+                    d = None
+                else:
+                    if self._max_training_date_seen is None or row_date > self._max_training_date_seen:
+                        self._max_training_date_seen = row_date
+
+            if d:
+                self._training_data.extend(d)
                 self._match_n += 1
+                no_progress_refreshes = 0
                 if self.max_matches and self._match_n >= self.max_matches:
                     log.info("stopping after --max-matches=%d", self.max_matches)
                     break
@@ -1451,9 +1711,7 @@ class SportadminGamesScraper:
             rows = self.load_trainings_page(activity_type)
             stuck_guard = 0
 
-        log.info("run %d: %d training rows harvested; run flags: %s",
-                 self.run_idx, len(data), self.run_flags or "none")
-        return data
+        return self._training_data
 
     def close(self) -> None:
         self.context.close()
@@ -1582,7 +1840,8 @@ if __name__ == "__main__":
                 if args.trainings:
                     rows = sp.collect_trainings(email, password, start_date, end_date,
                                                 args.activity_type, args.activity_name,
-                                                run_idx=k, max_matches=args.max_matches)
+                                                year=args.year, run_idx=k,
+                                                max_matches=args.max_matches)
                 else:
                     rows = sp.collect(email, password, start_date, end_date,
                                       args.series_pattern, args.year, run_idx=k,

@@ -31,12 +31,13 @@ class NoMatchingSeasonError(Exception):
 def resolve_input_files(path):
     """Accept either a single CSV path or a directory - in the latter case,
     every *.csv file directly inside it is analyzed in turn. A *_training.csv
-    file is never treated as a primary input (7-column schema, no season
-    marker of its own) - it's only ever consumed via training_sibling_path()
-    when its plain-match counterpart is analyzed."""
+    or *_narvaro.csv file is never treated as a primary input (different
+    schema, no season marker of its own) - each is only ever consumed via
+    training_sibling_path()/narvaro_sibling_path() when its plain-match
+    counterpart is analyzed."""
     if os.path.isdir(path):
         return sorted(f for f in glob.glob(os.path.join(path, "*.csv"))
-                      if not f.endswith("_training.csv"))
+                      if not f.endswith(("_training.csv", "_narvaro.csv")))
     return [path]
 
 
